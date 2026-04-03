@@ -1,0 +1,27 @@
+//waveform template, use English for marks and titles,software WaveDrom will transfer it to PNG
+{signal: [
+  {name: 'TAP State',          wave: '23.4567....892..', data: ['TLR','RTI','Sel-DR','Sel-IR','Cap-IR','Shift-IR','Exit1-IR','Upd-IR','RTI']},
+  {},
+  ['Inputs',
+    {name: 'TCK',               wave: 'p...............'},
+    {name: 'TE_TRSTLF',         wave: '10..............'},
+    {name: 'CLKIRLF',           wave: '0....1.....0....'},
+    {name: 'SHFIRLF',           wave: '0.....1....0....'},
+    {name: 'SCANINHF',          wave: 'x.....0.10.x....'},
+    {name: 'UPDIRHF',           wave: '0...........10..'},
+  ],
+  {},
+  ['Internal',
+    {name: 'srlhf[4:0] (master)',wave: 'x....23.456=....', data: ['10000','00000','00001','00010','00100']},
+    {name: 'srllf[4:0] (slave)', wave: 'x....23.456=....', data: ['10000','00000','00001','00010','00100']},
+    {name: 'prllfb[4:0]',       wave: '2............3..', data: ['01000','11011']},
+  ],
+  {},
+  ['Outputs',
+    {name: 'SCANFRIRHF',        wave: 'x....10.........'},
+    {name: 'TST_INSTLF[4:0]',   wave: '2............3..', data: ['10111(EMUPID)','00100(EMUCTL)']},
+  ],
+],
+ head: {text: "TE_INSREG — Load EMUCTL instruction (5'b00100)", tick: 0},
+ config: {hscale: 1.5}
+}

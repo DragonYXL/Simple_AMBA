@@ -6,7 +6,7 @@
 // Function:
 // - APB interconnect (1 master, 2 slaves)
 // - Address map:
-//     slave 0: 0x0000 - 0x0FFF  (PADDR[12] == 0)
+//     slave 0: 0x0000 - 0x0FFF  (PADDR[12] == 0) //这里添加一下每个slave地址空间大小
 //     slave 1: 0x1000 - 0x1FFF  (PADDR[12] == 1)
 // =============================================================================
 

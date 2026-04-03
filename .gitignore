@@ -59,6 +59,7 @@ Thumbs.db
 \#*\#
 .vscode/
 .idea/
+.json
 
 # =============================================================================
 # Whitelist: ensure these are always tracked

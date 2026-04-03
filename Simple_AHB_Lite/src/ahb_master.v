@@ -1,58 +1,63 @@
 // =============================================================================
-// Name:     apb_master
+// Name:     ahb_master
 // Date:     2026.04.03
 // Authors:  xlyan <yanxl24@m.fudan.edu.cn>
 //
 // Function:
-// - Single-word APB master protocol bridge
-// - Converts command interface (start/addr/wdata/write) to APB protocol
+// - Single-word AHB-Lite master protocol bridge
+// - Converts command interface (start/addr/wdata/write) to AHB-Lite protocol
+// - AHB-Lite pipelined: address phase (HTRANS/HADDR) then data phase (HWDATA/HRDATA)
 // - Registered outputs driven one cycle ahead to align with FSM state
-// - done/slverr are combinational for same-cycle notification
+// - done/hresp_out are combinational for same-cycle notification
 // =============================================================================
 
-module apb_master #(
+`include "ahb_addr_def.vh"
+
+module ahb_master #(
 	parameter ADDR_WIDTH = 13,
 	parameter DATA_WIDTH = 32
 ) (
-	input  wire                    pclk,
-	input  wire                    presetn,
+	input  wire                    hclk,
+	input  wire                    hresetn,
 
 	// Command interface
 	input  wire                    start,      // pulse to begin transfer
 	input  wire                    write,      // 1=write, 0=read
 	input  wire [ADDR_WIDTH-1:0]   addr,
 	input  wire [DATA_WIDTH-1:0]   wdata,
-	input  wire [DATA_WIDTH/8-1:0] strb,
 	output reg  [DATA_WIDTH-1:0]   rdata,      // registered, valid cycle after done
 	output wire                    done,       // combinational, same-cycle notification
-	output wire                    slverr,     // combinational, same-cycle notification
+	output wire                    resp_err,   // combinational, same-cycle notification
 
-	// APB master interface
-	output reg                     psel,
-	output reg                     penable,
-	output reg                     pwrite,
-	output reg  [ADDR_WIDTH-1:0]   paddr,
-	output reg  [DATA_WIDTH-1:0]   pwdata,
-	output reg  [DATA_WIDTH/8-1:0] pstrb,
-	input  wire [DATA_WIDTH-1:0]   prdata,
-	input  wire                    pready,
-	input  wire                    pslverr
+	// AHB-Lite master interface
+	output reg  [ADDR_WIDTH-1:0]   haddr,
+	output reg  [1:0]              htrans,
+	output reg                     hwrite,
+	output reg  [2:0]              hsize,
+	output reg  [2:0]              hburst,
+	output reg  [DATA_WIDTH-1:0]   hwdata,
+	input  wire [DATA_WIDTH-1:0]   hrdata,
+	input  wire                    hready,
+	input  wire                    hresp
 );
 
 	// -------------------------------------------------------------------------
 	// FSM states
 	// -------------------------------------------------------------------------
-	localparam IDLE   = 2'd0;
-	localparam SETUP  = 2'd1;  // APB setup phase
-	localparam ACCESS = 2'd2;  // APB access phase
+	localparam IDLE = 2'd0;
+	localparam ADDR = 2'd1;  // AHB address phase
+	localparam DATA = 2'd2;  // AHB data phase (wait for hready)
 
 	reg [1:0] state, nxt_state;
+
+	// Latched write data (captured during ADDR phase for use in DATA phase)
+	reg [DATA_WIDTH-1:0] wdata_lat;
 
 	// -------------------------------------------------------------------------
 	// State register
 	// -------------------------------------------------------------------------
-	always @(posedge pclk or negedge presetn) begin
-		if (!presetn)
+	always @(posedge hclk or negedge hresetn) begin
+		if (!hresetn)
 			state <= IDLE;
 		else
 			state <= nxt_state;
@@ -66,13 +71,13 @@ module apb_master #(
 		case (state)
 			IDLE: begin
 				if (start)
-					nxt_state = SETUP;
+					nxt_state = ADDR;
 			end
-			SETUP: begin
-				nxt_state = ACCESS;
+			ADDR: begin
+				nxt_state = DATA;
 			end
-			ACCESS: begin
-				if (pready)
+			DATA: begin
+				if (hready)
 					nxt_state = IDLE;
 			end
 			default: nxt_state = IDLE;
@@ -80,58 +85,60 @@ module apb_master #(
 	end
 
 	// -------------------------------------------------------------------------
-	// Combinational done / slverr (same-cycle as ACCESS + pready)
+	// Combinational done / resp_err (same-cycle as DATA + hready)
 	// -------------------------------------------------------------------------
-	assign done   = (state == ACCESS) & pready;
-	assign slverr = (state == ACCESS) & pready & pslverr;
+	assign done     = (state == DATA) & hready;
+	assign resp_err = (state == DATA) & hready & hresp;
 
 	// -------------------------------------------------------------------------
 	// Datapath (registered outputs driven one cycle ahead)
 	// -------------------------------------------------------------------------
-	always @(posedge pclk or negedge presetn) begin
-		if (!presetn) begin
-			psel    <= 1'b0;
-			penable <= 1'b0;
-			pwrite  <= 1'b0;
-			paddr   <= {ADDR_WIDTH{1'b0}};
-			pwdata  <= {DATA_WIDTH{1'b0}};
-			pstrb   <= {DATA_WIDTH/8{1'b0}};
-			rdata   <= {DATA_WIDTH{1'b0}};
+	always @(posedge hclk or negedge hresetn) begin
+		if (!hresetn) begin
+			haddr     <= {ADDR_WIDTH{1'b0}};
+			htrans    <= `HTRANS_IDLE;
+			hwrite    <= 1'b0;
+			hsize     <= 3'b000;
+			hburst    <= `HBURST_SINGLE;
+			hwdata    <= {DATA_WIDTH{1'b0}};
+			wdata_lat <= {DATA_WIDTH{1'b0}};
+			rdata     <= {DATA_WIDTH{1'b0}};
 		end else begin
 			case (state)
 				// ---------------------------------------------------------
-				// IDLE: on start, drive SETUP outputs for next cycle
+				// IDLE: on start, drive address phase outputs for next cycle
 				// ---------------------------------------------------------
 				IDLE: begin
 					if (start) begin
-						psel    <= 1'b1;
-						penable <= 1'b0;
-						pwrite  <= write;
-						paddr   <= addr;
-						pwdata  <= wdata;
-						pstrb   <= strb;
+						haddr  <= addr;
+						htrans <= `HTRANS_NONSEQ;
+						hwrite <= write;
+						hsize  <= `HSIZE_WORD;
+						hburst <= `HBURST_SINGLE;
+						wdata_lat <= wdata;
+					end else begin
+						htrans <= `HTRANS_IDLE;
 					end
 				end
 
 				// ---------------------------------------------------------
-				// SETUP: drive ACCESS outputs for next cycle
+				// ADDR: address phase active, drive write data for data phase
 				// ---------------------------------------------------------
-				SETUP: begin
-					penable <= 1'b1;
+				ADDR: begin
+					htrans <= `HTRANS_IDLE;
+					hwdata <= wdata_lat;
 				end
 
 				// ---------------------------------------------------------
-				// ACCESS: wait for pready, then capture and clean up
+				// DATA: wait for hready, then capture read data and clean up
 				// ---------------------------------------------------------
-				ACCESS: begin
-					if (pready) begin
-						psel    <= 1'b0;
-						penable <= 1'b0;
-						pwrite  <= 1'b0;
-						paddr   <= {ADDR_WIDTH{1'b0}};
-						pwdata  <= {DATA_WIDTH{1'b0}};
-						pstrb   <= {DATA_WIDTH/8{1'b0}};
-						rdata   <= prdata;
+				DATA: begin
+					if (hready) begin
+						haddr  <= {ADDR_WIDTH{1'b0}};
+						hwrite <= 1'b0;
+						hsize  <= 3'b000;
+						hwdata <= {DATA_WIDTH{1'b0}};
+						rdata  <= hrdata;
 					end
 				end
 			endcase

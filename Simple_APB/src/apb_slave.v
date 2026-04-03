@@ -4,10 +4,12 @@
 // Authors:  xlyan <yanxl24@m.fudan.edu.cn>
 //
 // Function:
-// - APB slave protocol adapter
-// - Decodes APB phases, generates register read/write controls
-// - Handles PSLVERR for out-of-range and write-to-RO
-// - Register file is protocol-agnostic (plain read/write interface)
+// - APB slave protocol adapter (no reg_file inside)
+// - Decodes APB phases, outputs generic register read/write signals
+// - SETUP phase: address decode and read data preparation
+// - ACCESS phase: execute write, confirm transfer
+// - pready gated by external busy (from reg_file)
+// - prdata held at 0 outside valid ACCESS window
 // =============================================================================
 
 `include "apb_addr_def.vh"
@@ -30,64 +32,50 @@ module apb_slave #(
 	output wire                    pready,
 	output wire                    pslverr,
 
-	// Local write port (for slave logic / testbench)
-	input  wire                           local_wr_en,
-	input  wire [`REG_IDX_WIDTH-1:0]      local_wr_addr,
-	input  wire [DATA_WIDTH-1:0]          local_wr_data,
-
-	// Slave-side ready control
-	input  wire                           local_ready
+	// Register file interface (wired to reg_file in top)
+	output wire                           reg_clk,
+	output wire                           reg_rstn,
+	output wire [`REG_IDX_WIDTH-1:0]      reg_addr,
+	output wire                           reg_wr_en,
+	output wire [DATA_WIDTH-1:0]          reg_wr_data,
+	input  wire [DATA_WIDTH-1:0]          reg_rd_data,
+	input  wire                           reg_err,
+	input  wire                           reg_busy
 );
+
+	// -------------------------------------------------------------------------
+	// Clock/reset pass-through to register file
+	// -------------------------------------------------------------------------
+	assign reg_clk  = pclk;
+	assign reg_rstn = presetn;
 
 	// -------------------------------------------------------------------------
 	// APB phase decode
 	// -------------------------------------------------------------------------
 	wire access_phase;
-	assign access_phase = psel & penable;
+	assign access_phase = psel &  penable;
 
 	// -------------------------------------------------------------------------
-	// Address decode (word-aligned register index)
+	// Register file address (driven from SETUP, held into ACCESS)
 	// -------------------------------------------------------------------------
-	wire [`REG_IDX_WIDTH-1:0] reg_idx;
-	assign reg_idx = paddr[`REG_IDX_WIDTH+1:2];
+	assign reg_addr = paddr[`REG_IDX_WIDTH+1:2];
 
 	// -------------------------------------------------------------------------
-	// Register file control signals
+	// Register file write (ACCESS + pready + write)
 	// -------------------------------------------------------------------------
-	wire                  reg_wr_en;
-	wire                  reg_addr_valid;
-	wire                  reg_wr_ro_err;
-	wire [DATA_WIDTH-1:0] reg_rd_data;
-
-	// Write enable: only during access phase with pready
-	assign reg_wr_en = access_phase & pwrite & pready;
-
-	// Register file instance (protocol-agnostic)
-	apb_reg_file #(
-		.DATA_WIDTH  (DATA_WIDTH),
-		.NUM_REGS    (`NUM_REGS),
-		.NUM_RO_REGS (`NUM_RO_REGS),
-		.IDX_WIDTH   (`REG_IDX_WIDTH)
-	) u_reg_file (
-		.clk            (pclk),
-		.rstn           (presetn),
-		.wr_en          (reg_wr_en),
-		.wr_addr        (reg_idx),
-		.wr_data        (pwdata),
-		.rd_addr        (reg_idx),
-		.rd_data        (reg_rd_data),
-		.addr_valid     (reg_addr_valid),
-		.wr_ro_err      (reg_wr_ro_err),
-		.local_wr_en    (local_wr_en),
-		.local_wr_addr  (local_wr_addr),
-		.local_wr_data  (local_wr_data)
-	);
+	assign reg_wr_en   = access_phase & pwrite & pready;
+	assign reg_wr_data = pwdata;
 
 	// -------------------------------------------------------------------------
 	// APB response
 	// -------------------------------------------------------------------------
-	assign prdata  = reg_rd_data;
-	assign pready  = local_ready;
-	assign pslverr = access_phase & pready & (~reg_addr_valid | reg_wr_ro_err);
+	// pready: deassert only during ACCESS when reg_file is busy
+	assign pready  = access_phase ? ~reg_busy : 1'b1;
+
+	// prdata: only valid during ACCESS with pready, otherwise 0
+	assign prdata  = (access_phase & pready & ~pwrite) ? reg_rd_data : {DATA_WIDTH{1'b0}};
+
+	// pslverr: unified error from reg_file, only on completed ACCESS
+	assign pslverr = access_phase & pready & reg_err;
 
 endmodule

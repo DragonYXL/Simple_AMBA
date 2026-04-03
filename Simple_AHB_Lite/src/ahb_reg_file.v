@@ -1,5 +1,5 @@
 // =============================================================================
-// Name:     apb_reg_file
+// Name:     ahb_reg_file
 // Date:     2026.04.03
 // Authors:  xlyan <yanxl24@m.fudan.edu.cn>
 //
@@ -8,10 +8,10 @@
 // - Port A: general read/write (write restricted by RO mask)
 // - Port B (local): unrestricted write for slave logic / testbench
 // - Outputs busy when local port is writing (Port A must wait)
-// - No protocol awareness — pure register storage
+// - No protocol awareness -- pure register storage
 // =============================================================================
 
-module apb_reg_file #(
+module ahb_reg_file #(
 	parameter DATA_WIDTH   = 32,
 	parameter NUM_REGS     = 15,
 	parameter NUM_RO_REGS  = 5,
@@ -27,7 +27,8 @@ module apb_reg_file #(
 	output wire [DATA_WIDTH-1:0] rd_data,
 
 	// Status outputs
-	output wire                  err,
+	output wire                  addr_valid,
+	output wire                  wr_ro_err,
 	output wire                  busy,
 
 	// Port B (local): unrestricted write
@@ -47,13 +48,10 @@ module apb_reg_file #(
 	localparam [2**IDX_WIDTH-1:0] RO_MASK    = (1 << NUM_RO_REGS) - 1;
 	localparam [2**IDX_WIDTH-1:0] VALID_MASK = (1 << NUM_REGS)    - 1;
 
-	wire is_valid;
 	wire is_ro;
-	assign is_valid = VALID_MASK[addr];
-	assign is_ro    = RO_MASK[addr];
-
-	// Unified error: out-of-range OR write-to-RO
-	assign err = ~is_valid | (wr_en & is_valid & is_ro);
+	assign is_ro       = RO_MASK[addr];
+	assign addr_valid  = VALID_MASK[addr];
+	assign wr_ro_err   = wr_en & addr_valid & is_ro;
 
 	// -------------------------------------------------------------------------
 	// Busy: local port is writing, Port A must wait
@@ -79,7 +77,7 @@ module apb_reg_file #(
 				regs[local_wr_addr] <= local_wr_data;
 
 			// Port A: only RW registers, and not when busy
-			if (wr_en && is_valid && !is_ro && !busy)
+			if (wr_en && addr_valid && !is_ro && !busy)
 				regs[addr] <= wr_data;
 		end
 	end
