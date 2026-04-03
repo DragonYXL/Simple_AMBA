@@ -1,87 +1,135 @@
 // =============================================================================
 // Name:     apb_reg_file
 // Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Authors:  xlyan <dragonyxl.eminence@gmail.com>
 //
 // Function:
-// - Dual-port register file with RO/RW attribute
-// - Port A: general read/write (write restricted by RO mask)
-// - Port B (local): unrestricted write for slave logic / testbench
-// - Outputs busy when local port is writing (Port A must wait)
-// - No protocol awareness — pure register storage
+// - Dual-clock register file with CDC handshake
+// - Instantiates pclk-domain regs, slv_clk-domain regs, and 2x CDC
+// - RW: APB writes in pclk, CDC pulse syncs to slv_clk shadow
+// - RO: local writes in slv_clk, CDC pulse syncs to pclk shadow
+// - busy: RW CDC in flight (pclk domain, blocks next APB write)
 // =============================================================================
 
 module apb_reg_file #(
 	parameter DATA_WIDTH   = 32,
 	parameter NUM_REGS     = 15,
 	parameter NUM_RO_REGS  = 5,
+	parameter NUM_RW_REGS  = 10,
 	parameter IDX_WIDTH    = 4
 ) (
-	input  wire                  clk,
-	input  wire                  rstn,
+	// pclk domain (APB side)
+	input  wire                  pclk,
+	input  wire                  prstn,
 
-	// Port A: general read/write (shared address)
+	// slv_clk domain (slave logic side)
+	input  wire                  sclk,
+	input  wire                  srstn,
+
+	// Port A: APB read/write (pclk domain)
 	input  wire                  wr_en,
 	input  wire [IDX_WIDTH-1:0]  addr,
 	input  wire [DATA_WIDTH-1:0] wr_data,
 	output wire [DATA_WIDTH-1:0] rd_data,
-
-	// Status outputs
 	output wire                  err,
 	output wire                  busy,
 
-	// Port B (local): unrestricted write
+	// Port B: local (slv_clk domain)
 	input  wire                  local_wr_en,
 	input  wire [IDX_WIDTH-1:0]  local_wr_addr,
-	input  wire [DATA_WIDTH-1:0] local_wr_data
+	input  wire [DATA_WIDTH-1:0] local_wr_data,
+	input  wire [IDX_WIDTH-1:0]  local_rd_addr,
+	output wire [DATA_WIDTH-1:0] local_rd_data
 );
 
 	// -------------------------------------------------------------------------
-	// Register array
+	// Internal CDC signals
 	// -------------------------------------------------------------------------
-	reg [DATA_WIDTH-1:0] regs [0:NUM_REGS-1];
+	wire                  rw_update_pulse;     // pclk: RW reg written
+	wire                  rw_update_sclk;      // slv_clk: CDC output
+	wire                  rw_cdc_busy;         // pclk: CDC in flight
+
+	wire                  ro_update_pulse;     // slv_clk: RO reg written
+	wire                  ro_update_pclk;      // pclk: CDC output
+
+	// Cross-domain register data buses
+	wire [DATA_WIDTH-1:0] rw_reg_bus  [0:NUM_RW_REGS-1];  // pclk → slv_clk
+	wire [DATA_WIDTH-1:0] ro_reg_bus  [0:NUM_RO_REGS-1];  // slv_clk → pclk
 
 	// -------------------------------------------------------------------------
-	// Bitmask for RO/valid lookup
+	// Busy: RW CDC handshake in flight (pclk domain)
 	// -------------------------------------------------------------------------
-	localparam [2**IDX_WIDTH-1:0] RO_MASK    = (1 << NUM_RO_REGS) - 1;
-	localparam [2**IDX_WIDTH-1:0] VALID_MASK = (1 << NUM_REGS)    - 1;
-
-	wire is_valid;
-	wire is_ro;
-	assign is_valid = VALID_MASK[addr];
-	assign is_ro    = RO_MASK[addr];
-
-	// Unified error: out-of-range OR write-to-RO
-	assign err = ~is_valid | (wr_en & is_valid & is_ro);
+	assign busy = rw_cdc_busy;
 
 	// -------------------------------------------------------------------------
-	// Busy: local port is writing, Port A must wait
+	// pclk domain registers (RW regs + RO shadow)
 	// -------------------------------------------------------------------------
-	assign busy = local_wr_en;
+	apb_regs_pclk #(
+		.DATA_WIDTH  (DATA_WIDTH),
+		.NUM_REGS    (NUM_REGS),
+		.NUM_RO_REGS (NUM_RO_REGS),
+		.NUM_RW_REGS (NUM_RW_REGS),
+		.IDX_WIDTH   (IDX_WIDTH)
+	) u_pclk_regs (
+		.pclk            (pclk),
+		.prstn           (prstn),
+		.wr_en           (wr_en),
+		.addr            (addr),
+		.wr_data         (wr_data),
+		.rd_data         (rd_data),
+		.err             (err),
+		.rw_update_pulse (rw_update_pulse),
+		.rw_reg_out      (rw_reg_bus),
+		.ro_update_pulse (ro_update_pclk),
+		.ro_reg_in       (ro_reg_bus)
+	);
 
 	// -------------------------------------------------------------------------
-	// Read (combinational, shared address)
+	// slv_clk domain registers (RO regs + RW shadow)
 	// -------------------------------------------------------------------------
-	assign rd_data = regs[addr];
+	apb_regs_sclk #(
+		.DATA_WIDTH  (DATA_WIDTH),
+		.NUM_RO_REGS (NUM_RO_REGS),
+		.NUM_RW_REGS (NUM_RW_REGS),
+		.IDX_WIDTH   (IDX_WIDTH)
+	) u_sclk_regs (
+		.sclk            (sclk),
+		.srstn           (srstn),
+		.local_wr_en     (local_wr_en),
+		.local_wr_addr   (local_wr_addr),
+		.local_wr_data   (local_wr_data),
+		.local_rd_addr   (local_rd_addr),
+		.local_rd_data   (local_rd_data),
+		.ro_update_pulse (ro_update_pulse),
+		.ro_reg_out      (ro_reg_bus),
+		.rw_update_pulse (rw_update_sclk),
+		.rw_reg_in       (rw_reg_bus)
+	);
 
 	// -------------------------------------------------------------------------
-	// Write logic
+	// CDC: RW update (pclk → slv_clk)
 	// -------------------------------------------------------------------------
-	integer i;
-	always @(posedge clk or negedge rstn) begin
-		if (!rstn) begin
-			for (i = 0; i < NUM_REGS; i = i + 1)
-				regs[i] <= {DATA_WIDTH{1'b0}};
-		end else begin
-			// Port B (local): unrestricted, any register
-			if (local_wr_en && VALID_MASK[local_wr_addr])
-				regs[local_wr_addr] <= local_wr_data;
+	pulse_handshake u_rw_cdc (
+		.clk_src   (pclk),
+		.rstn_src  (prstn),
+		.pulse_src (rw_update_pulse),
+		.busy_src  (rw_cdc_busy),
+		.clk_dst   (sclk),
+		.rstn_dst  (srstn),
+		.pulse_dst (rw_update_sclk)
+	);
 
-			// Port A: only RW registers, and not when busy
-			if (wr_en && is_valid && !is_ro && !busy)
-				regs[addr] <= wr_data;
-		end
-	end
+	// -------------------------------------------------------------------------
+	// CDC: RO update (slv_clk → pclk)
+	// -------------------------------------------------------------------------
+	pulse_handshake u_ro_cdc (
+		.clk_src   (sclk),
+		.rstn_src  (srstn),
+		.pulse_src (ro_update_pulse),
+		.busy_src  (),
+		.clk_dst   (pclk),
+		.rstn_dst  (prstn),
+		.pulse_dst (ro_update_pclk)
+	);
 
 endmodule

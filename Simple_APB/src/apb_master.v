@@ -1,7 +1,7 @@
 // =============================================================================
 // Name:     apb_master
 // Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Authors:  xlyan <dragonyxl.eminence@gmail.com>
 //
 // Function:
 // - Single-word APB master protocol bridge
@@ -22,7 +22,6 @@ module apb_master #(
 	input  wire                    write,      // 1=write, 0=read
 	input  wire [ADDR_WIDTH-1:0]   addr,
 	input  wire [DATA_WIDTH-1:0]   wdata,
-	input  wire [DATA_WIDTH/8-1:0] strb,
 	output reg  [DATA_WIDTH-1:0]   rdata,      // registered, valid cycle after done
 	output wire                    done,       // combinational, same-cycle notification
 	output wire                    slverr,     // combinational, same-cycle notification
@@ -33,7 +32,6 @@ module apb_master #(
 	output reg                     pwrite,
 	output reg  [ADDR_WIDTH-1:0]   paddr,
 	output reg  [DATA_WIDTH-1:0]   pwdata,
-	output reg  [DATA_WIDTH/8-1:0] pstrb,
 	input  wire [DATA_WIDTH-1:0]   prdata,
 	input  wire                    pready,
 	input  wire                    pslverr
@@ -95,7 +93,6 @@ module apb_master #(
 			pwrite  <= 1'b0;
 			paddr   <= {ADDR_WIDTH{1'b0}};
 			pwdata  <= {DATA_WIDTH{1'b0}};
-			pstrb   <= {DATA_WIDTH/8{1'b0}};
 			rdata   <= {DATA_WIDTH{1'b0}};
 		end else begin
 			case (state)
@@ -109,7 +106,6 @@ module apb_master #(
 						pwrite  <= write;
 						paddr   <= addr;
 						pwdata  <= wdata;
-						pstrb   <= strb;
 					end
 				end
 
@@ -130,7 +126,6 @@ module apb_master #(
 						pwrite  <= 1'b0;
 						paddr   <= {ADDR_WIDTH{1'b0}};
 						pwdata  <= {DATA_WIDTH{1'b0}};
-						pstrb   <= {DATA_WIDTH/8{1'b0}};
 						rdata   <= prdata;
 					end
 				end

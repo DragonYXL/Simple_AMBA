@@ -7,7 +7,7 @@
 // =============================================================================
 // Name: apb_master
 // Date: 2026.04.03
-// Authors: xlyan <yanxl24@m.fudan.edu.cn>
+// Authors: xlyan -- dragonyxl.eminence@gmail.com
 //
 // Function:
 // - add module function here!!!

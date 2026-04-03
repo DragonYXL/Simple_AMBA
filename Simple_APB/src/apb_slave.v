@@ -1,18 +1,18 @@
 // =============================================================================
 // Name:     apb_slave
 // Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Authors:  xlyan <dragonyxl.eminence@gmail.com>
 //
 // Function:
 // - APB slave protocol adapter (no reg_file inside)
 // - Decodes APB phases, outputs generic register read/write signals
 // - SETUP phase: address decode and read data preparation
 // - ACCESS phase: execute write, confirm transfer
-// - pready gated by external busy (from reg_file)
+// - pready gated by busy (RW CDC in flight, pclk domain)
 // - prdata held at 0 outside valid ACCESS window
 // =============================================================================
 
-`include "apb_addr_def.vh"
+`include "simple_apb.vh"
 
 module apb_slave #(
 	parameter ADDR_WIDTH   = 12,
@@ -27,7 +27,6 @@ module apb_slave #(
 	input  wire                    pwrite,
 	input  wire [ADDR_WIDTH-1:0]   paddr,
 	input  wire [DATA_WIDTH-1:0]   pwdata,
-	input  wire [DATA_WIDTH/8-1:0] pstrb,
 	output wire [DATA_WIDTH-1:0]   prdata,
 	output wire                    pready,
 	output wire                    pslverr,

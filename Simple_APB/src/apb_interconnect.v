@@ -1,16 +1,16 @@
 // =============================================================================
 // Name:     apb_interconnect
 // Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Authors:  xlyan <dragonyxl.eminence@gmail.com>
 //
 // Function:
 // - APB interconnect (1 master, 2 slaves)
 // - Address map:
-//     slave 0: 0x0000 - 0x0FFF  (PADDR[12] == 0) //这里添加一下每个slave地址空间大小
-//     slave 1: 0x1000 - 0x1FFF  (PADDR[12] == 1)
+//     slave 0: 0x0000 - 0x0FFF  (4KB address space)
+//     slave 1: 0x1000 - 0x1FFF  (4KB address space)
 // =============================================================================
 
-`include "apb_addr_def.vh"
+`include "simple_apb.vh"
 
 module apb_interconnect #(
 	parameter ADDR_WIDTH = 13,
@@ -22,7 +22,6 @@ module apb_interconnect #(
 	input  wire                    pwrite_m,
 	input  wire [ADDR_WIDTH-1:0]   paddr_m,
 	input  wire [DATA_WIDTH-1:0]   pwdata_m,
-	input  wire [DATA_WIDTH/8-1:0] pstrb_m,
 	output wire [DATA_WIDTH-1:0]   prdata_m,
 	output wire                    pready_m,
 	output wire                    pslverr_m,
@@ -33,7 +32,6 @@ module apb_interconnect #(
 	output wire                    pwrite_s0,
 	output wire [ADDR_WIDTH-2:0]   paddr_s0,
 	output wire [DATA_WIDTH-1:0]   pwdata_s0,
-	output wire [DATA_WIDTH/8-1:0] pstrb_s0,
 	input  wire [DATA_WIDTH-1:0]   prdata_s0,
 	input  wire                    pready_s0,
 	input  wire                    pslverr_s0,
@@ -44,7 +42,6 @@ module apb_interconnect #(
 	output wire                    pwrite_s1,
 	output wire [ADDR_WIDTH-2:0]   paddr_s1,
 	output wire [DATA_WIDTH-1:0]   pwdata_s1,
-	output wire [DATA_WIDTH/8-1:0] pstrb_s1,
 	input  wire [DATA_WIDTH-1:0]   prdata_s1,
 	input  wire                    pready_s1,
 	input  wire                    pslverr_s1
@@ -68,7 +65,6 @@ module apb_interconnect #(
 	assign pwrite_s0  = pwrite_m;
 	assign paddr_s0   = paddr_m[ADDR_WIDTH-2:0];
 	assign pwdata_s0  = pwdata_m;
-	assign pstrb_s0   = pstrb_m;
 
 	// Slave 1
 	assign psel_s1    = sel_slave1;
@@ -76,7 +72,6 @@ module apb_interconnect #(
 	assign pwrite_s1  = pwrite_m;
 	assign paddr_s1   = paddr_m[ADDR_WIDTH-2:0];
 	assign pwdata_s1  = pwdata_m;
-	assign pstrb_s1   = pstrb_m;
 
 	// -------------------------------------------------------------------------
 	// Mux back to master

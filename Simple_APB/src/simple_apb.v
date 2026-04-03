@@ -1,7 +1,7 @@
 // =============================================================================
-// Name:     top_apb
+// Name:     simple_apb
 // Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Authors:  xlyan <dragonyxl.eminence@gmail.com>
 //
 // Function:
 // - Top level: master + interconnect + 2x (slave + reg_file) side-by-side
@@ -9,9 +9,9 @@
 // - Local write ports exposed for slave logic / testbench
 // =============================================================================
 
-`include "apb_addr_def.vh"
+`include "simple_apb.vh"
 
-module top_apb #(
+module simple_apb #(
 	parameter ADDR_WIDTH       = `APB_ADDR_WIDTH,
 	parameter DATA_WIDTH       = `APB_DATA_WIDTH,
 	parameter SLAVE_ADDR_WIDTH = ADDR_WIDTH - 1
@@ -19,25 +19,32 @@ module top_apb #(
 	input  wire                    pclk,
 	input  wire                    presetn,
 
+	// Slave clock domain
+	input  wire                    sclk,
+	input  wire                    srstn,
+
 	// Command interface
 	input  wire                           start,
 	input  wire                           write,
 	input  wire [ADDR_WIDTH-1:0]          addr,
 	input  wire [DATA_WIDTH-1:0]          wdata,
-	input  wire [DATA_WIDTH/8-1:0]        strb,
 	output wire [DATA_WIDTH-1:0]          rdata,
 	output wire                           done,
 	output wire                           slverr,
 
-	// Slave 0 local write port (directly to reg_file0)
+	// Slave 0 local port (sclk domain, directly to reg_file0)
 	input  wire                           s0_local_wr_en,
 	input  wire [`REG_IDX_WIDTH-1:0]      s0_local_wr_addr,
 	input  wire [DATA_WIDTH-1:0]          s0_local_wr_data,
+	input  wire [`REG_IDX_WIDTH-1:0]      s0_local_rd_addr,
+	output wire [DATA_WIDTH-1:0]          s0_local_rd_data,
 
-	// Slave 1 local write port (directly to reg_file1)
+	// Slave 1 local port (sclk domain, directly to reg_file1)
 	input  wire                           s1_local_wr_en,
 	input  wire [`REG_IDX_WIDTH-1:0]      s1_local_wr_addr,
-	input  wire [DATA_WIDTH-1:0]          s1_local_wr_data
+	input  wire [DATA_WIDTH-1:0]          s1_local_wr_data,
+	input  wire [`REG_IDX_WIDTH-1:0]      s1_local_rd_addr,
+	output wire [DATA_WIDTH-1:0]          s1_local_rd_data
 );
 
 	// -------------------------------------------------------------------------
@@ -48,7 +55,6 @@ module top_apb #(
 	wire                    pwrite_m;
 	wire [ADDR_WIDTH-1:0]   paddr_m;
 	wire [DATA_WIDTH-1:0]   pwdata_m;
-	wire [DATA_WIDTH/8-1:0] pstrb_m;
 	wire [DATA_WIDTH-1:0]   prdata_m;
 	wire                    pready_m;
 	wire                    pslverr_m;
@@ -59,7 +65,6 @@ module top_apb #(
 	wire                        pwrite_s0;
 	wire [SLAVE_ADDR_WIDTH-1:0] paddr_s0;
 	wire [DATA_WIDTH-1:0]       pwdata_s0;
-	wire [DATA_WIDTH/8-1:0]     pstrb_s0;
 	wire [DATA_WIDTH-1:0]       prdata_s0;
 	wire                        pready_s0;
 	wire                        pslverr_s0;
@@ -70,7 +75,6 @@ module top_apb #(
 	wire                        pwrite_s1;
 	wire [SLAVE_ADDR_WIDTH-1:0] paddr_s1;
 	wire [DATA_WIDTH-1:0]       pwdata_s1;
-	wire [DATA_WIDTH/8-1:0]     pstrb_s1;
 	wire [DATA_WIDTH-1:0]       prdata_s1;
 	wire                        pready_s1;
 	wire                        pslverr_s1;
@@ -108,7 +112,6 @@ module top_apb #(
 		.write   (write),
 		.addr    (addr),
 		.wdata   (wdata),
-		.strb    (strb),
 		.rdata   (rdata),
 		.done    (done),
 		.slverr  (slverr),
@@ -117,7 +120,6 @@ module top_apb #(
 		.pwrite  (pwrite_m),
 		.paddr   (paddr_m),
 		.pwdata  (pwdata_m),
-		.pstrb   (pstrb_m),
 		.prdata  (prdata_m),
 		.pready  (pready_m),
 		.pslverr (pslverr_m)
@@ -135,7 +137,6 @@ module top_apb #(
 		.pwrite_m   (pwrite_m),
 		.paddr_m    (paddr_m),
 		.pwdata_m   (pwdata_m),
-		.pstrb_m    (pstrb_m),
 		.prdata_m   (prdata_m),
 		.pready_m   (pready_m),
 		.pslverr_m  (pslverr_m),
@@ -144,7 +145,6 @@ module top_apb #(
 		.pwrite_s0  (pwrite_s0),
 		.paddr_s0   (paddr_s0),
 		.pwdata_s0  (pwdata_s0),
-		.pstrb_s0   (pstrb_s0),
 		.prdata_s0  (prdata_s0),
 		.pready_s0  (pready_s0),
 		.pslverr_s0 (pslverr_s0),
@@ -153,7 +153,6 @@ module top_apb #(
 		.pwrite_s1  (pwrite_s1),
 		.paddr_s1   (paddr_s1),
 		.pwdata_s1  (pwdata_s1),
-		.pstrb_s1   (pstrb_s1),
 		.prdata_s1  (prdata_s1),
 		.pready_s1  (pready_s1),
 		.pslverr_s1 (pslverr_s1)
@@ -173,7 +172,6 @@ module top_apb #(
 		.pwrite         (pwrite_s0),
 		.paddr          (paddr_s0),
 		.pwdata         (pwdata_s0),
-		.pstrb          (pstrb_s0),
 		.prdata         (prdata_s0),
 		.pready         (pready_s0),
 		.pslverr        (pslverr_s0),
@@ -187,15 +185,18 @@ module top_apb #(
 		.reg_busy       (s0_reg_busy)
 	);
 
-	// Register file 0 (slave0 side-by-side, clk/rst from slave)
+	// Register file 0 (slave0 side-by-side, dual clock domain)
 	apb_reg_file #(
 		.DATA_WIDTH  (DATA_WIDTH),
 		.NUM_REGS    (`NUM_REGS),
 		.NUM_RO_REGS (`NUM_RO_REGS),
+		.NUM_RW_REGS (`NUM_RW_REGS),
 		.IDX_WIDTH   (`REG_IDX_WIDTH)
 	) u_reg_file0 (
-		.clk            (s0_reg_clk),
-		.rstn           (s0_reg_rstn),
+		.pclk           (s0_reg_clk),
+		.prstn          (s0_reg_rstn),
+		.sclk           (sclk),
+		.srstn          (srstn),
 		.wr_en          (s0_reg_wr_en),
 		.addr           (s0_reg_addr),
 		.wr_data        (s0_reg_wr_data),
@@ -204,7 +205,9 @@ module top_apb #(
 		.busy           (s0_reg_busy),
 		.local_wr_en    (s0_local_wr_en),
 		.local_wr_addr  (s0_local_wr_addr),
-		.local_wr_data  (s0_local_wr_data)
+		.local_wr_data  (s0_local_wr_data),
+		.local_rd_addr  (s0_local_rd_addr),
+		.local_rd_data  (s0_local_rd_data)
 	);
 
 	// -------------------------------------------------------------------------
@@ -221,7 +224,6 @@ module top_apb #(
 		.pwrite         (pwrite_s1),
 		.paddr          (paddr_s1),
 		.pwdata         (pwdata_s1),
-		.pstrb          (pstrb_s1),
 		.prdata         (prdata_s1),
 		.pready         (pready_s1),
 		.pslverr        (pslverr_s1),
@@ -235,15 +237,18 @@ module top_apb #(
 		.reg_busy       (s1_reg_busy)
 	);
 
-	// Register file 1 (slave1 side-by-side, clk/rst from slave)
+	// Register file 1 (slave1 side-by-side, dual clock domain)
 	apb_reg_file #(
 		.DATA_WIDTH  (DATA_WIDTH),
 		.NUM_REGS    (`NUM_REGS),
 		.NUM_RO_REGS (`NUM_RO_REGS),
+		.NUM_RW_REGS (`NUM_RW_REGS),
 		.IDX_WIDTH   (`REG_IDX_WIDTH)
 	) u_reg_file1 (
-		.clk            (s1_reg_clk),
-		.rstn           (s1_reg_rstn),
+		.pclk           (s1_reg_clk),
+		.prstn          (s1_reg_rstn),
+		.sclk           (sclk),
+		.srstn          (srstn),
 		.wr_en          (s1_reg_wr_en),
 		.addr           (s1_reg_addr),
 		.wr_data        (s1_reg_wr_data),
@@ -252,7 +257,9 @@ module top_apb #(
 		.busy           (s1_reg_busy),
 		.local_wr_en    (s1_local_wr_en),
 		.local_wr_addr  (s1_local_wr_addr),
-		.local_wr_data  (s1_local_wr_data)
+		.local_wr_data  (s1_local_wr_data),
+		.local_rd_addr  (s1_local_rd_addr),
+		.local_rd_data  (s1_local_rd_data)
 	);
 
 endmodule
