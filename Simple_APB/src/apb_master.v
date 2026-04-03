@@ -40,9 +40,9 @@ module apb_master #(
 	// -------------------------------------------------------------------------
 	// FSM states
 	// -------------------------------------------------------------------------
-	localparam S_IDLE   = 2'd0;
-	localparam S_SETUP  = 2'd1;  // APB setup phase
-	localparam S_ACCESS = 2'd2;  // APB access phase
+	localparam IDLE   = 2'd0;
+	localparam SETUP  = 2'd1;  // APB setup phase
+	localparam ACCESS = 2'd2;  // APB access phase
 
 	reg [1:0] state, nxt_state;
 
@@ -51,7 +51,7 @@ module apb_master #(
 	// -------------------------------------------------------------------------
 	always @(posedge pclk or negedge presetn) begin
 		if (!presetn)
-			state <= S_IDLE;
+			state <= IDLE;
 		else
 			state <= nxt_state;
 	end
@@ -62,18 +62,18 @@ module apb_master #(
 	always @(*) begin
 		nxt_state = state;
 		case (state)
-			S_IDLE: begin
+			IDLE: begin
 				if (start)
-					nxt_state = S_SETUP;
+					nxt_state = SETUP;
 			end
-			S_SETUP: begin
-				nxt_state = S_ACCESS;
+			SETUP: begin
+				nxt_state = ACCESS;
 			end
-			S_ACCESS: begin
+			ACCESS: begin
 				if (pready)
-					nxt_state = S_IDLE;
+					nxt_state = IDLE;
 			end
-			default: nxt_state = S_IDLE;
+			default: nxt_state = IDLE;
 		endcase
 	end
 
@@ -97,7 +97,7 @@ module apb_master #(
 
 			case (state)
 				// ---------------------------------------------------------
-				S_IDLE: begin
+				IDLE: begin
 					psel    <= 1'b0;
 					penable <= 1'b0;
 					if (start) begin
@@ -109,13 +109,13 @@ module apb_master #(
 				end
 
 				// ---------------------------------------------------------
-				S_SETUP: begin
+				SETUP: begin
 					psel    <= 1'b1;
 					penable <= 1'b0;
 				end
 
 				// ---------------------------------------------------------
-				S_ACCESS: begin
+				ACCESS: begin
 					penable <= 1'b1;
 					if (pready) begin
 						psel    <= 1'b0;

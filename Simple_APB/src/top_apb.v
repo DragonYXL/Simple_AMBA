@@ -29,15 +29,17 @@ module top_apb #(
 	output wire                           done,
 	output wire                           slverr,
 
-	// Slave 0 local write port
+	// Slave 0 local port
 	input  wire                           s0_local_wr_en,
 	input  wire [`REG_IDX_WIDTH-1:0]      s0_local_wr_addr,
 	input  wire [DATA_WIDTH-1:0]          s0_local_wr_data,
+	input  wire                           s0_local_ready,
 
-	// Slave 1 local write port
+	// Slave 1 local port
 	input  wire                           s1_local_wr_en,
 	input  wire [`REG_IDX_WIDTH-1:0]      s1_local_wr_addr,
-	input  wire [DATA_WIDTH-1:0]          s1_local_wr_data
+	input  wire [DATA_WIDTH-1:0]          s1_local_wr_data,
+	input  wire                           s1_local_ready
 );
 
 	// -------------------------------------------------------------------------
@@ -159,7 +161,8 @@ module top_apb #(
 		.pslverr        (pslverr_s0),
 		.local_wr_en    (s0_local_wr_en),
 		.local_wr_addr  (s0_local_wr_addr),
-		.local_wr_data  (s0_local_wr_data)
+		.local_wr_data  (s0_local_wr_data),
+		.local_ready    (s0_local_ready)
 	);
 
 	// -------------------------------------------------------------------------
@@ -182,7 +185,8 @@ module top_apb #(
 		.pslverr        (pslverr_s1),
 		.local_wr_en    (s1_local_wr_en),
 		.local_wr_addr  (s1_local_wr_addr),
-		.local_wr_data  (s1_local_wr_data)
+		.local_wr_data  (s1_local_wr_data),
+		.local_ready    (s1_local_ready)
 	);
 
 endmodule

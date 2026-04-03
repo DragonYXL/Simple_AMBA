@@ -4,9 +4,10 @@
 // Authors:  xlyan <yanxl24@m.fudan.edu.cn>
 //
 // Function:
-// - APB slave protocol adapter with internal register file
-// - 15 registers: reg0-4 read-only (APB), reg5-14 read-write (APB)
-// - Local write port exposed for slave logic / testbench access
+// - APB slave protocol adapter
+// - Decodes APB phases, generates register read/write controls
+// - Handles PSLVERR for out-of-range and write-to-RO
+// - Register file is protocol-agnostic (plain read/write interface)
 // =============================================================================
 
 `include "apb_addr_def.vh"
@@ -32,38 +33,51 @@ module apb_slave #(
 	// Local write port (for slave logic / testbench)
 	input  wire                           local_wr_en,
 	input  wire [`REG_IDX_WIDTH-1:0]      local_wr_addr,
-	input  wire [DATA_WIDTH-1:0]          local_wr_data
+	input  wire [DATA_WIDTH-1:0]          local_wr_data,
+
+	// Slave-side ready control
+	input  wire                           local_ready
 );
 
 	// -------------------------------------------------------------------------
-	// Address decode
+	// APB phase decode
+	// -------------------------------------------------------------------------
+	wire access_phase;
+	assign access_phase = psel & penable;
+
+	// -------------------------------------------------------------------------
+	// Address decode (word-aligned register index)
 	// -------------------------------------------------------------------------
 	wire [`REG_IDX_WIDTH-1:0] reg_idx;
-	assign reg_idx = paddr[`REG_IDX_WIDTH+1:2];    // word-aligned index
+	assign reg_idx = paddr[`REG_IDX_WIDTH+1:2];
 
 	// -------------------------------------------------------------------------
-	// Register file signals
+	// Register file control signals
 	// -------------------------------------------------------------------------
-	wire                  apb_addr_valid;
-	wire                  apb_wr_ro_err;
-	wire [DATA_WIDTH-1:0] rd_data;
+	wire                  reg_wr_en;
+	wire                  reg_addr_valid;
+	wire                  reg_wr_ro_err;
+	wire [DATA_WIDTH-1:0] reg_rd_data;
 
-	// Register file instance
+	// Write enable: only during access phase with pready
+	assign reg_wr_en = access_phase & pwrite & pready;
+
+	// Register file instance (protocol-agnostic)
 	apb_reg_file #(
 		.DATA_WIDTH  (DATA_WIDTH),
 		.NUM_REGS    (`NUM_REGS),
 		.NUM_RO_REGS (`NUM_RO_REGS),
 		.IDX_WIDTH   (`REG_IDX_WIDTH)
 	) u_reg_file (
-		.pclk           (pclk),
-		.presetn        (presetn),
-		.apb_wr_en      (psel & penable & pwrite),
-		.apb_wr_addr    (reg_idx),
-		.apb_wr_data    (pwdata),
-		.apb_rd_addr    (reg_idx),
-		.apb_rd_data    (rd_data),
-		.apb_addr_valid (apb_addr_valid),
-		.apb_wr_ro_err  (apb_wr_ro_err),
+		.clk            (pclk),
+		.rstn           (presetn),
+		.wr_en          (reg_wr_en),
+		.wr_addr        (reg_idx),
+		.wr_data        (pwdata),
+		.rd_addr        (reg_idx),
+		.rd_data        (reg_rd_data),
+		.addr_valid     (reg_addr_valid),
+		.wr_ro_err      (reg_wr_ro_err),
 		.local_wr_en    (local_wr_en),
 		.local_wr_addr  (local_wr_addr),
 		.local_wr_data  (local_wr_data)
@@ -72,8 +86,8 @@ module apb_slave #(
 	// -------------------------------------------------------------------------
 	// APB response
 	// -------------------------------------------------------------------------
-	assign prdata  = rd_data;
-	assign pready  = 1'b1;
-	assign pslverr = psel & penable & (~apb_addr_valid | apb_wr_ro_err);
+	assign prdata  = reg_rd_data;
+	assign pready  = local_ready;
+	assign pslverr = access_phase & pready & (~reg_addr_valid | reg_wr_ro_err);
 
 endmodule

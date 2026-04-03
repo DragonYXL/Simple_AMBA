@@ -1,0 +1,73 @@
+# =============================================================================
+# Simulation artifacts
+# =============================================================================
+# Cadence Xcelium / Incisive
+xcelium.d/
+INCA_libs/
+xrun.key
+xrun.log
+*.shm/
+*.dsn
+*.trn
+
+# Synopsys VCS
+csrc/
+simv
+simv.daidir/
+ucli.key
+
+# Mentor/Siemens Questa / ModelSim
+work/
+transcript
+vsim.wlf
+modelsim.ini
+
+# Icarus Verilog
+*.vvp
+
+# Waveform dumps
+*.vcd
+*.fsdb
+*.vpd
+*.wlf
+
+# Log and database directories
+log/
+db/
+wave/
+
+# =============================================================================
+# Build / synthesis artifacts
+# =============================================================================
+*.o
+*.a
+*.so
+
+# Synopsys Design Compiler
+alib-52/
+command.log
+default.svf
+
+# =============================================================================
+# OS / editor artifacts
+# =============================================================================
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+\#*\#
+.vscode/
+.idea/
+
+# =============================================================================
+# Whitelist: ensure these are always tracked
+# =============================================================================
+!Makefile
+!*.v
+!*.sv
+!*.vh
+!*.svh
+!*.f
+!*.tcl
+!*.csh

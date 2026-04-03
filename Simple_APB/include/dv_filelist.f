@@ -3,7 +3,7 @@
 // =============================================================================
 
 // RTL
--f ./rtl_filelist.f
+-f ../include/rtl_filelist.f
 
 // Testbench
-./dv/top_apb_tb.v
+../dv/top_apb_tb.v

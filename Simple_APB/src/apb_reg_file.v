@@ -4,9 +4,10 @@
 // Authors:  xlyan <yanxl24@m.fudan.edu.cn>
 //
 // Function:
-// - Dual-port register file for APB slave
-// - APB side: read all regs, write only RW regs (index >= NUM_RO_REGS)
-// - Local side: write any register (for slave logic / testbench)
+// - Dual-port register file with RO/RW attribute
+// - Port A: general read/write (write restricted by RO mask)
+// - Port B (local): unrestricted write for slave logic / testbench
+// - No protocol awareness — pure register storage
 // =============================================================================
 
 module apb_reg_file #(
@@ -15,19 +16,21 @@ module apb_reg_file #(
 	parameter NUM_RO_REGS  = 5,
 	parameter IDX_WIDTH    = 4
 ) (
-	input  wire                  pclk,
-	input  wire                  presetn,
+	input  wire                  clk,
+	input  wire                  rstn,
 
-	// APB side (from slave adapter)
-	input  wire                  apb_wr_en,
-	input  wire [IDX_WIDTH-1:0]  apb_wr_addr,
-	input  wire [DATA_WIDTH-1:0] apb_wr_data,
-	input  wire [IDX_WIDTH-1:0]  apb_rd_addr,
-	output wire [DATA_WIDTH-1:0] apb_rd_data,
-	output wire                  apb_addr_valid,
-	output wire                  apb_wr_ro_err,
+	// Port A: general read/write
+	input  wire                  wr_en,
+	input  wire [IDX_WIDTH-1:0]  wr_addr,
+	input  wire [DATA_WIDTH-1:0] wr_data,
+	input  wire [IDX_WIDTH-1:0]  rd_addr,
+	output wire [DATA_WIDTH-1:0] rd_data,
 
-	// Local side (for slave logic / testbench)
+	// Status outputs (address/attribute lookup)
+	output wire                  addr_valid,
+	output wire                  wr_ro_err,
+
+	// Port B (local): unrestricted write
 	input  wire                  local_wr_en,
 	input  wire [IDX_WIDTH-1:0]  local_wr_addr,
 	input  wire [DATA_WIDTH-1:0] local_wr_data
@@ -39,34 +42,41 @@ module apb_reg_file #(
 	reg [DATA_WIDTH-1:0] regs [0:NUM_REGS-1];
 
 	// -------------------------------------------------------------------------
-	// Address validity and RO protection
+	// Bitmask for RO/valid lookup (indexed by register address)
 	// -------------------------------------------------------------------------
+	// RO_MASK: bit[i]=1 means reg[i] is read-only on port A
+	// VALID_MASK: bit[i]=1 means reg[i] exists
+	localparam [2**IDX_WIDTH-1:0] RO_MASK    = (1 << NUM_RO_REGS) - 1;
+	localparam [2**IDX_WIDTH-1:0] VALID_MASK = (1 << NUM_REGS)    - 1;
+
 	wire is_ro;
-	assign is_ro           = (apb_wr_addr < NUM_RO_REGS[IDX_WIDTH-1:0]);
-	assign apb_addr_valid  = (apb_rd_addr < NUM_REGS[IDX_WIDTH-1:0]);
-	assign apb_wr_ro_err   = apb_wr_en & (apb_wr_addr < NUM_REGS[IDX_WIDTH-1:0]) & is_ro;
+	wire is_valid_wr;
+	assign is_ro       = RO_MASK[wr_addr];
+	assign addr_valid  = VALID_MASK[rd_addr];
+	assign is_valid_wr = VALID_MASK[wr_addr];
+	assign wr_ro_err   = wr_en & is_valid_wr & is_ro;
 
 	// -------------------------------------------------------------------------
-	// APB read (combinational)
+	// Read (combinational)
 	// -------------------------------------------------------------------------
-	assign apb_rd_data = regs[apb_rd_addr];
+	assign rd_data = regs[rd_addr];
 
 	// -------------------------------------------------------------------------
-	// Register write logic
+	// Write logic
 	// -------------------------------------------------------------------------
 	integer i;
-	always @(posedge pclk or negedge presetn) begin
-		if (!presetn) begin
+	always @(posedge clk or negedge rstn) begin
+		if (!rstn) begin
 			for (i = 0; i < NUM_REGS; i = i + 1)
 				regs[i] <= {DATA_WIDTH{1'b0}};
 		end else begin
-			// Local write: unrestricted, any register
-			if (local_wr_en && (local_wr_addr < NUM_REGS[IDX_WIDTH-1:0]))
+			// Port B (local): unrestricted, any register
+			if (local_wr_en && VALID_MASK[local_wr_addr])
 				regs[local_wr_addr] <= local_wr_data;
 
-			// APB write: only RW registers (index >= NUM_RO_REGS)
-			if (apb_wr_en && (apb_wr_addr < NUM_REGS[IDX_WIDTH-1:0]) && !is_ro)
-				regs[apb_wr_addr] <= apb_wr_data;
+			// Port A: only RW registers (index >= NUM_RO_REGS)
+			if (wr_en && is_valid_wr && !is_ro)
+				regs[wr_addr] <= wr_data;
 		end
 	end
 

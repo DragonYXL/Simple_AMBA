@@ -36,15 +36,17 @@ module top_apb_tb;
 	wire                          done;
 	wire                          slverr;
 
-	// Slave 0 local write port
+	// Slave 0 local port
 	reg                           s0_local_wr_en;
 	reg  [`REG_IDX_WIDTH-1:0]     s0_local_wr_addr;
 	reg  [DATA_WIDTH-1:0]         s0_local_wr_data;
+	reg                           s0_local_ready;
 
-	// Slave 1 local write port
+	// Slave 1 local port
 	reg                           s1_local_wr_en;
 	reg  [`REG_IDX_WIDTH-1:0]     s1_local_wr_addr;
 	reg  [DATA_WIDTH-1:0]         s1_local_wr_data;
+	reg                           s1_local_ready;
 
 	// -------------------------------------------------------------------------
 	// DUT
@@ -66,9 +68,11 @@ module top_apb_tb;
 		.s0_local_wr_en   (s0_local_wr_en),
 		.s0_local_wr_addr (s0_local_wr_addr),
 		.s0_local_wr_data (s0_local_wr_data),
+		.s0_local_ready   (s0_local_ready),
 		.s1_local_wr_en   (s1_local_wr_en),
 		.s1_local_wr_addr (s1_local_wr_addr),
-		.s1_local_wr_data (s1_local_wr_data)
+		.s1_local_wr_data (s1_local_wr_data),
+		.s1_local_ready   (s1_local_ready)
 	);
 
 	// -------------------------------------------------------------------------
@@ -207,9 +211,11 @@ module top_apb_tb;
 		s0_local_wr_en   = 0;
 		s0_local_wr_addr = 0;
 		s0_local_wr_data = 0;
+		s0_local_ready   = 1;
 		s1_local_wr_en   = 0;
 		s1_local_wr_addr = 0;
 		s1_local_wr_data = 0;
+		s1_local_ready   = 1;
 
 		// Reset
 		repeat (5) @(posedge pclk);
@@ -328,6 +334,35 @@ module top_apb_tb;
 		local_write_s0(4'd7, 32'hFACE_FACE);
 		apb_read(`SLV0_BASE_ADDR + `REG7_OFFSET);
 		check_rdata(32'hFACE_FACE, "s0 local wr->APB rd");
+
+		// =================================================================
+		// Test 12: Wait states via local_ready control
+		// =================================================================
+		$display("\n========== Test 12: Wait states (local_ready) ==========");
+		// Write a known value first
+		apb_write(`SLV0_BASE_ADDR + `REG6_OFFSET, 32'hAAAA_BBBB);
+		// De-assert ready on slave 0, start a read
+		s0_local_ready = 0;
+		@(posedge pclk);
+		write <= 1'b0;
+		addr  <= `SLV0_BASE_ADDR + `REG6_OFFSET;
+		start <= 1'b1;
+		@(posedge pclk);
+		start <= 1'b0;
+		// Wait a few cycles while slave holds off
+		repeat (3) @(posedge pclk);
+		// Verify done has NOT fired yet
+		if (done === 1'b1) begin
+			$display("[FAIL] done asserted while local_ready=0");
+			err_cnt = err_cnt + 1;
+		end else begin
+			$display("[PASS] transfer stalled while local_ready=0");
+		end
+		// Re-assert ready, transfer should complete
+		s0_local_ready = 1;
+		wait (done === 1'b1);
+		@(posedge pclk);
+		check_rdata(32'hAAAA_BBBB, "s0 wait-state read");
 
 		// =================================================================
 		// Summary

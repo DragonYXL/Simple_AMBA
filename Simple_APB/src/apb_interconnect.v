@@ -10,6 +10,8 @@
 //     slave 1: 0x1000 - 0x1FFF  (PADDR[12] == 1)
 // =============================================================================
 
+`include "apb_addr_def.vh"
+
 module apb_interconnect #(
 	parameter ADDR_WIDTH = 13,
 	parameter DATA_WIDTH = 32
@@ -54,8 +56,8 @@ module apb_interconnect #(
 	wire sel_slave0;
 	wire sel_slave1;
 
-	assign sel_slave0 = psel_m & ~paddr_m[ADDR_WIDTH-1];   // bit[12]==0
-	assign sel_slave1 = psel_m &  paddr_m[ADDR_WIDTH-1];   // bit[12]==1
+	assign sel_slave0 = psel_m & ((paddr_m & ~`SLV_ADDR_MASK) == `SLV0_BASE_ADDR);
+	assign sel_slave1 = psel_m & ((paddr_m & ~`SLV_ADDR_MASK) == `SLV1_BASE_ADDR);
 
 	// -------------------------------------------------------------------------
 	// Forward to slaves (shared signals broadcast, PSEL gated)
