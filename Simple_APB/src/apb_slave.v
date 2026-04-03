@@ -1,78 +1,79 @@
 // =============================================================================
-// APB4 Slave — pure protocol adapter
-// Delay behavior comes from SRAM's RD_LATENCY, not from this module.
-//   RD_LATENCY = 1  →  0 APB wait states (zero-wait)
-//   RD_LATENCY = N  →  N-1 APB wait states
+// Name:     apb_slave
+// Date:     2026.04.03
+// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+//
+// Function:
+// - APB slave protocol adapter with internal register file
+// - 15 registers: reg0-4 read-only (APB), reg5-14 read-write (APB)
+// - Local write port exposed for slave logic / testbench access
 // =============================================================================
 
-module apb_slave #(
-    parameter ADDR_WIDTH  = 12,
-    parameter DATA_WIDTH  = 32,
-    parameter RAM_DEPTH   = 1024,
-    parameter RD_LATENCY  = 1       // forwarded to SRAM
-) (
-    input  wire                    pclk,
-    input  wire                    presetn,
+`include "apb_addr_def.vh"
 
-    // APB4 slave interface
-    input  wire                    psel,
-    input  wire                    penable,
-    input  wire                    pwrite,
-    input  wire [ADDR_WIDTH-1:0]   paddr,
-    input  wire [DATA_WIDTH-1:0]   pwdata,
-    input  wire [DATA_WIDTH/8-1:0] pstrb,
-    input  wire [2:0]              pprot,
-    output wire [DATA_WIDTH-1:0]   prdata,
-    output wire                    pready,
-    output wire                    pslverr
+module apb_slave #(
+	parameter ADDR_WIDTH   = 12,
+	parameter DATA_WIDTH   = `APB_DATA_WIDTH
+) (
+	input  wire                    pclk,
+	input  wire                    presetn,
+
+	// APB slave interface
+	input  wire                    psel,
+	input  wire                    penable,
+	input  wire                    pwrite,
+	input  wire [ADDR_WIDTH-1:0]   paddr,
+	input  wire [DATA_WIDTH-1:0]   pwdata,
+	input  wire [DATA_WIDTH/8-1:0] pstrb,
+	output wire [DATA_WIDTH-1:0]   prdata,
+	output wire                    pready,
+	output wire                    pslverr,
+
+	// Local write port (for slave logic / testbench)
+	input  wire                           local_wr_en,
+	input  wire [`REG_IDX_WIDTH-1:0]      local_wr_addr,
+	input  wire [DATA_WIDTH-1:0]          local_wr_data
 );
 
-    // -------------------------------------------------------------------------
-    // Address decoding
-    // -------------------------------------------------------------------------
-    localparam RAM_ADDR_W   = $clog2(RAM_DEPTH);
-    localparam RAM_ADDR_MSB = RAM_ADDR_W + 1;  // +2 for byte addr, -1 for bit index
+	// -------------------------------------------------------------------------
+	// Address decode
+	// -------------------------------------------------------------------------
+	wire [`REG_IDX_WIDTH-1:0] reg_idx;
+	assign reg_idx = paddr[`REG_IDX_WIDTH+1:2];    // word-aligned index
 
-    wire [RAM_ADDR_W-1:0] ram_addr;
-    assign ram_addr = paddr[RAM_ADDR_MSB:2];    // word-aligned
+	// -------------------------------------------------------------------------
+	// Register file signals
+	// -------------------------------------------------------------------------
+	wire                  apb_addr_valid;
+	wire                  apb_wr_ro_err;
+	wire [DATA_WIDTH-1:0] rd_data;
 
-    wire addr_valid;
-    assign addr_valid = (paddr[ADDR_WIDTH-1:RAM_ADDR_MSB+1] == {(ADDR_WIDTH-RAM_ADDR_MSB-1){1'b0}});
+	// Register file instance
+	apb_reg_file #(
+		.DATA_WIDTH  (DATA_WIDTH),
+		.NUM_REGS    (`NUM_REGS),
+		.NUM_RO_REGS (`NUM_RO_REGS),
+		.IDX_WIDTH   (`REG_IDX_WIDTH)
+	) u_reg_file (
+		.pclk           (pclk),
+		.presetn        (presetn),
+		.apb_wr_en      (psel & penable & pwrite),
+		.apb_wr_addr    (reg_idx),
+		.apb_wr_data    (pwdata),
+		.apb_rd_addr    (reg_idx),
+		.apb_rd_data    (rd_data),
+		.apb_addr_valid (apb_addr_valid),
+		.apb_wr_ro_err  (apb_wr_ro_err),
+		.local_wr_en    (local_wr_en),
+		.local_wr_addr  (local_wr_addr),
+		.local_wr_data  (local_wr_data)
+	);
 
-    // -------------------------------------------------------------------------
-    // SRAM interface
-    // -------------------------------------------------------------------------
-    // Read:  issue during setup phase  (PSEL & ~PENABLE & ~PWRITE)
-    // Write: issue during access phase (PSEL &  PENABLE &  PWRITE)
-    wire ram_rd_req = psel & ~penable & ~pwrite;
-    wire ram_wr_req = psel &  penable &  pwrite;
-
-    wire                  ram_en = ram_rd_req | ram_wr_req;
-    wire                  ram_we = ram_wr_req;
-    wire [DATA_WIDTH-1:0] ram_rdata;
-    wire                  ram_rd_valid;
-
-    sram #(
-        .ADDR_WIDTH (RAM_ADDR_W),
-        .DATA_WIDTH (DATA_WIDTH),
-        .DEPTH      (RAM_DEPTH),
-        .RD_LATENCY (RD_LATENCY)
-    ) u_ram (
-        .clk     (pclk),
-        .en      (ram_en),
-        .we      (ram_we),
-        .addr    (ram_addr),
-        .wdata   (pwdata),
-        .wstrb   (pstrb),
-        .rdata   (ram_rdata),
-        .rd_valid(ram_rd_valid)
-    );
-
-    // -------------------------------------------------------------------------
-    // APB response
-    // -------------------------------------------------------------------------
-    assign prdata  = ram_rdata;
-    assign pready  = pwrite ? 1'b1 : ram_rd_valid;
-    assign pslverr = psel & penable & pready & ~addr_valid;
+	// -------------------------------------------------------------------------
+	// APB response
+	// -------------------------------------------------------------------------
+	assign prdata  = rd_data;
+	assign pready  = 1'b1;
+	assign pslverr = psel & penable & (~apb_addr_valid | apb_wr_ro_err);
 
 endmodule

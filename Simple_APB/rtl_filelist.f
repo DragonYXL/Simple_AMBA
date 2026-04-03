@@ -2,7 +2,9 @@
 // Simple APB Project - RTL File List
 // =============================================================================
 
-./src/sram.v
++incdir+./src
+
+./src/apb_reg_file.v
 ./src/apb_slave.v
 ./src/apb_interconnect.v
 ./src/apb_master.v

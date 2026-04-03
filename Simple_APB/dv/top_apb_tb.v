@@ -1,300 +1,354 @@
 // =============================================================================
-// Testbench for Simple APB system
-// Test cases:
-//   1-2. Single word write/read to slave 0 (RD_LATENCY=1, zero wait)
-//   3-4. Block write/read to slave 0  (4 words)
-//   5-6. Single word write/read to slave 1 (RD_LATENCY=3, 2 wait states)
-//   7-8. Block write/read to slave 1  (4 words, with wait states)
-//   9.   Error: out-of-range address → PSLVERR
+// Name:     top_apb_tb
+// Date:     2026.04.03
+// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+//
+// Function:
+// - Testbench for APB system with register-file-based slaves
+// - Tests: single RW read/write, RO protection, out-of-range, local write
 // =============================================================================
 
 `timescale 1ns / 1ps
+`include "apb_addr_def.vh"
 
 module top_apb_tb;
 
-    // -------------------------------------------------------------------------
-    // Parameters
-    // -------------------------------------------------------------------------
-    parameter ADDR_WIDTH      = 13;
-    parameter DATA_WIDTH      = 32;
-    parameter RAM_DEPTH       = 16;     // small for TB
-    parameter LOCAL_RAM_DEPTH = 16;
-    parameter CLK_PERIOD      = 10;
+	// -------------------------------------------------------------------------
+	// Parameters
+	// -------------------------------------------------------------------------
+	parameter ADDR_WIDTH = `APB_ADDR_WIDTH;
+	parameter DATA_WIDTH = `APB_DATA_WIDTH;
+	parameter CLK_PERIOD = 10;
 
-    // -------------------------------------------------------------------------
-    // Signals
-    // -------------------------------------------------------------------------
-    reg                    pclk;
-    reg                    presetn;
-    reg                    start;
-    reg                    rw;
-    reg  [ADDR_WIDTH-1:0]  apb_base;
-    reg  [$clog2(LOCAL_RAM_DEPTH)-1:0] local_base;
-    reg  [7:0]             length;
-    wire                   done;
+	// -------------------------------------------------------------------------
+	// DUT signals
+	// -------------------------------------------------------------------------
+	reg                           pclk;
+	reg                           presetn;
 
-    // -------------------------------------------------------------------------
-    // DUT: slave 0 = RD_LATENCY 1 (0 wait), slave 1 = RD_LATENCY 3 (2 wait)
-    // -------------------------------------------------------------------------
-    top_apb #(
-        .ADDR_WIDTH     (ADDR_WIDTH),
-        .DATA_WIDTH     (DATA_WIDTH),
-        .RAM_DEPTH      (RAM_DEPTH),
-        .LOCAL_RAM_DEPTH(LOCAL_RAM_DEPTH),
-        .S0_RD_LATENCY  (1),
-        .S1_RD_LATENCY  (3)
-    ) u_dut (
-        .pclk       (pclk),
-        .presetn    (presetn),
-        .start      (start),
-        .rw         (rw),
-        .apb_base   (apb_base),
-        .local_base (local_base),
-        .length     (length),
-        .done       (done)
-    );
+	// Command interface
+	reg                           start;
+	reg                           write;
+	reg  [ADDR_WIDTH-1:0]         addr;
+	reg  [DATA_WIDTH-1:0]         wdata;
+	reg  [DATA_WIDTH/8-1:0]       strb;
+	wire [DATA_WIDTH-1:0]         rdata;
+	wire                          done;
+	wire                          slverr;
 
-    // -------------------------------------------------------------------------
-    // Clock generation
-    // -------------------------------------------------------------------------
-    initial pclk = 0;
-    always #(CLK_PERIOD/2) pclk = ~pclk;
+	// Slave 0 local write port
+	reg                           s0_local_wr_en;
+	reg  [`REG_IDX_WIDTH-1:0]     s0_local_wr_addr;
+	reg  [DATA_WIDTH-1:0]         s0_local_wr_data;
 
-    // -------------------------------------------------------------------------
-    // Helper tasks
-    // -------------------------------------------------------------------------
-    integer err_cnt;
+	// Slave 1 local write port
+	reg                           s1_local_wr_en;
+	reg  [`REG_IDX_WIDTH-1:0]     s1_local_wr_addr;
+	reg  [DATA_WIDTH-1:0]         s1_local_wr_data;
 
-    task automatic do_transfer(
-        input        t_rw,
-        input [ADDR_WIDTH-1:0]  t_apb_base,
-        input [$clog2(LOCAL_RAM_DEPTH)-1:0] t_local_base,
-        input [7:0]  t_length
-    );
-    begin
-        @(posedge pclk);
-        rw         <= t_rw;
-        apb_base   <= t_apb_base;
-        local_base <= t_local_base;
-        length     <= t_length;
-        start      <= 1'b1;
-        @(posedge pclk);
-        start      <= 1'b0;
-        // Wait for done
-        wait (done === 1'b1);
-        @(posedge pclk);
-    end
-    endtask
+	// -------------------------------------------------------------------------
+	// DUT
+	// -------------------------------------------------------------------------
+	top_apb #(
+		.ADDR_WIDTH (ADDR_WIDTH),
+		.DATA_WIDTH (DATA_WIDTH)
+	) u_dut (
+		.pclk             (pclk),
+		.presetn          (presetn),
+		.start            (start),
+		.write            (write),
+		.addr             (addr),
+		.wdata            (wdata),
+		.strb             (strb),
+		.rdata            (rdata),
+		.done             (done),
+		.slverr           (slverr),
+		.s0_local_wr_en   (s0_local_wr_en),
+		.s0_local_wr_addr (s0_local_wr_addr),
+		.s0_local_wr_data (s0_local_wr_data),
+		.s1_local_wr_en   (s1_local_wr_en),
+		.s1_local_wr_addr (s1_local_wr_addr),
+		.s1_local_wr_data (s1_local_wr_data)
+	);
 
-    task automatic check_slave_ram(
-        input integer slave_id,
-        input integer offset,
-        input [DATA_WIDTH-1:0] expected
-    );
-    reg [DATA_WIDTH-1:0] actual;
-    begin
-        if (slave_id == 0)
-            actual = u_dut.u_slave0.u_ram.mem[offset];
-        else
-            actual = u_dut.u_slave1.u_ram.mem[offset];
+	// -------------------------------------------------------------------------
+	// Clock generation
+	// -------------------------------------------------------------------------
+	initial pclk = 0;
+	always #(CLK_PERIOD/2) pclk = ~pclk;
 
-        if (actual !== expected) begin
-            $display("[FAIL] slave%0d.ram[%0d] = 0x%08h, expected 0x%08h",
-                     slave_id, offset, actual, expected);
-            err_cnt = err_cnt + 1;
-        end else begin
-            $display("[PASS] slave%0d.ram[%0d] = 0x%08h",
-                     slave_id, offset, actual);
-        end
-    end
-    endtask
+	// -------------------------------------------------------------------------
+	// Error counter
+	// -------------------------------------------------------------------------
+	integer err_cnt;
 
-    task automatic check_local_ram(
-        input integer offset,
-        input [DATA_WIDTH-1:0] expected
-    );
-    reg [DATA_WIDTH-1:0] actual;
-    begin
-        actual = u_dut.u_master.u_local_ram.mem[offset];
-        if (actual !== expected) begin
-            $display("[FAIL] local_ram[%0d] = 0x%08h, expected 0x%08h",
-                     offset, actual, expected);
-            err_cnt = err_cnt + 1;
-        end else begin
-            $display("[PASS] local_ram[%0d] = 0x%08h",
-                     offset, actual);
-        end
-    end
-    endtask
+	// -------------------------------------------------------------------------
+	// Helper task: APB write
+	// -------------------------------------------------------------------------
+	task automatic apb_write(
+		input [ADDR_WIDTH-1:0] t_addr,
+		input [DATA_WIDTH-1:0] t_data
+	);
+	begin
+		@(posedge pclk);
+		write <= 1'b1;
+		addr  <= t_addr;
+		wdata <= t_data;
+		strb  <= {DATA_WIDTH/8{1'b1}};
+		start <= 1'b1;
+		@(posedge pclk);
+		start <= 1'b0;
+		wait (done === 1'b1);
+		@(posedge pclk);
+	end
+	endtask
 
-    // -------------------------------------------------------------------------
-    // Main test sequence
-    // -------------------------------------------------------------------------
-    integer k;
+	// -------------------------------------------------------------------------
+	// Helper task: APB read
+	// -------------------------------------------------------------------------
+	task automatic apb_read(
+		input [ADDR_WIDTH-1:0] t_addr
+	);
+	begin
+		@(posedge pclk);
+		write <= 1'b0;
+		addr  <= t_addr;
+		wdata <= {DATA_WIDTH{1'b0}};
+		strb  <= {DATA_WIDTH/8{1'b0}};
+		start <= 1'b1;
+		@(posedge pclk);
+		start <= 1'b0;
+		wait (done === 1'b1);
+		@(posedge pclk);
+	end
+	endtask
 
-    initial begin
-        $dumpfile("top_apb_tb.vcd");
-        $dumpvars(0, top_apb_tb);
+	// -------------------------------------------------------------------------
+	// Helper task: check rdata after read
+	// -------------------------------------------------------------------------
+	task automatic check_rdata(
+		input [DATA_WIDTH-1:0] expected,
+		input [8*40-1:0]       msg
+	);
+	begin
+		if (rdata !== expected) begin
+			$display("[FAIL] %0s: got 0x%08h, expected 0x%08h", msg, rdata, expected);
+			err_cnt = err_cnt + 1;
+		end else begin
+			$display("[PASS] %0s: 0x%08h", msg, rdata);
+		end
+	end
+	endtask
 
-        err_cnt    = 0;
-        presetn    = 0;
-        start      = 0;
-        rw         = 0;
-        apb_base   = 0;
-        local_base = 0;
-        length     = 0;
+	// -------------------------------------------------------------------------
+	// Helper task: check slverr after transfer
+	// -------------------------------------------------------------------------
+	task automatic check_slverr(
+		input        expected,
+		input [8*40-1:0] msg
+	);
+	begin
+		if (slverr !== expected) begin
+			$display("[FAIL] %0s: slverr=%0b, expected=%0b", msg, slverr, expected);
+			err_cnt = err_cnt + 1;
+		end else begin
+			$display("[PASS] %0s: slverr=%0b", msg, slverr);
+		end
+	end
+	endtask
 
-        // Reset
-        repeat (5) @(posedge pclk);
-        presetn = 1;
-        repeat (2) @(posedge pclk);
+	// -------------------------------------------------------------------------
+	// Helper task: local write to slave register
+	// -------------------------------------------------------------------------
+	task automatic local_write_s0(
+		input [`REG_IDX_WIDTH-1:0] reg_idx,
+		input [DATA_WIDTH-1:0]     data
+	);
+	begin
+		@(posedge pclk);
+		s0_local_wr_en   <= 1'b1;
+		s0_local_wr_addr <= reg_idx;
+		s0_local_wr_data <= data;
+		@(posedge pclk);
+		s0_local_wr_en   <= 1'b0;
+	end
+	endtask
 
-        // =================================================================
-        // Test 1: Single word write to slave 0 (zero wait state)
-        // =================================================================
-        $display("\n========== Test 1: Single write to slave 0 ==========");
-        u_dut.u_master.u_local_ram.mem[0] = 32'hDEAD_BEEF;
-        do_transfer(
-            .t_rw        (1'b1),
-            .t_apb_base  (13'h0000),
-            .t_local_base(4'd0),
-            .t_length    (8'd1)
-        );
-        check_slave_ram(0, 0, 32'hDEAD_BEEF);
+	task automatic local_write_s1(
+		input [`REG_IDX_WIDTH-1:0] reg_idx,
+		input [DATA_WIDTH-1:0]     data
+	);
+	begin
+		@(posedge pclk);
+		s1_local_wr_en   <= 1'b1;
+		s1_local_wr_addr <= reg_idx;
+		s1_local_wr_data <= data;
+		@(posedge pclk);
+		s1_local_wr_en   <= 1'b0;
+	end
+	endtask
 
-        // =================================================================
-        // Test 2: Single word read back from slave 0
-        // =================================================================
-        $display("\n========== Test 2: Single read from slave 0 ==========");
-        u_dut.u_master.u_local_ram.mem[8] = 32'h0;
-        do_transfer(
-            .t_rw        (1'b0),
-            .t_apb_base  (13'h0000),
-            .t_local_base(4'd8),
-            .t_length    (8'd1)
-        );
-        check_local_ram(8, 32'hDEAD_BEEF);
+	// -------------------------------------------------------------------------
+	// Main test sequence
+	// -------------------------------------------------------------------------
+	integer k;
 
-        // =================================================================
-        // Test 3: Block write to slave 0 (4 words)
-        // =================================================================
-        $display("\n========== Test 3: Block write 4 words to slave 0 ==========");
-        for (k = 0; k < 4; k = k + 1)
-            u_dut.u_master.u_local_ram.mem[k] = 32'hA000_0000 + k;
-        do_transfer(
-            .t_rw        (1'b1),
-            .t_apb_base  (13'h0010),   // slave 0, word offset 4
-            .t_local_base(4'd0),
-            .t_length    (8'd4)
-        );
-        for (k = 0; k < 4; k = k + 1)
-            check_slave_ram(0, 4 + k, 32'hA000_0000 + k);
+	initial begin
+		$dumpfile("top_apb_tb.vcd");
+		$dumpvars(0, top_apb_tb);
 
-        // =================================================================
-        // Test 4: Block read back from slave 0 (4 words)
-        // =================================================================
-        $display("\n========== Test 4: Block read 4 words from slave 0 ==========");
-        for (k = 0; k < 4; k = k + 1)
-            u_dut.u_master.u_local_ram.mem[4 + k] = 32'h0;
-        do_transfer(
-            .t_rw        (1'b0),
-            .t_apb_base  (13'h0010),
-            .t_local_base(4'd4),
-            .t_length    (8'd4)
-        );
-        for (k = 0; k < 4; k = k + 1)
-            check_local_ram(4 + k, 32'hA000_0000 + k);
+		err_cnt          = 0;
+		presetn          = 0;
+		start            = 0;
+		write            = 0;
+		addr             = 0;
+		wdata            = 0;
+		strb             = 0;
+		s0_local_wr_en   = 0;
+		s0_local_wr_addr = 0;
+		s0_local_wr_data = 0;
+		s1_local_wr_en   = 0;
+		s1_local_wr_addr = 0;
+		s1_local_wr_data = 0;
 
-        // =================================================================
-        // Test 5: Single word write to slave 1 (2 wait states on read)
-        // =================================================================
-        $display("\n========== Test 5: Single write to slave 1 (multi-cycle) ==========");
-        u_dut.u_master.u_local_ram.mem[0] = 32'hCAFE_BABE;
-        do_transfer(
-            .t_rw        (1'b1),
-            .t_apb_base  (13'h1000),   // slave 1, offset 0
-            .t_local_base(4'd0),
-            .t_length    (8'd1)
-        );
-        check_slave_ram(1, 0, 32'hCAFE_BABE);
+		// Reset
+		repeat (5) @(posedge pclk);
+		presetn = 1;
+		repeat (2) @(posedge pclk);
 
-        // =================================================================
-        // Test 6: Single word read from slave 1 (2 wait states)
-        // =================================================================
-        $display("\n========== Test 6: Single read from slave 1 (multi-cycle) ==========");
-        u_dut.u_master.u_local_ram.mem[0] = 32'h0;
-        do_transfer(
-            .t_rw        (1'b0),
-            .t_apb_base  (13'h1000),
-            .t_local_base(4'd0),
-            .t_length    (8'd1)
-        );
-        check_local_ram(0, 32'hCAFE_BABE);
+		// =================================================================
+		// Test 1: Local write to slave 0 RO regs, APB read back
+		// =================================================================
+		$display("\n========== Test 1: Local write slave 0 RO regs, APB read ==========");
+		for (k = 0; k < `NUM_RO_REGS; k = k + 1) begin
+			local_write_s0(k[`REG_IDX_WIDTH-1:0], 32'hAA00_0000 + k);
+		end
+		for (k = 0; k < `NUM_RO_REGS; k = k + 1) begin
+			apb_read(`SLV0_BASE_ADDR + {k[9:0], 2'b00});
+			check_rdata(32'hAA00_0000 + k, "s0 RO reg read");
+		end
 
-        // =================================================================
-        // Test 7: Block write to slave 1 (4 words, with wait states)
-        // =================================================================
-        $display("\n========== Test 7: Block write 4 words to slave 1 (multi-cycle) ==========");
-        for (k = 0; k < 4; k = k + 1)
-            u_dut.u_master.u_local_ram.mem[k] = 32'hB000_0000 + k;
-        do_transfer(
-            .t_rw        (1'b1),
-            .t_apb_base  (13'h1004),   // slave 1, word offset 1
-            .t_local_base(4'd0),
-            .t_length    (8'd4)
-        );
-        for (k = 0; k < 4; k = k + 1)
-            check_slave_ram(1, 1 + k, 32'hB000_0000 + k);
+		// =================================================================
+		// Test 2: Local write to slave 1 RO regs, APB read back
+		// =================================================================
+		$display("\n========== Test 2: Local write slave 1 RO regs, APB read ==========");
+		for (k = 0; k < `NUM_RO_REGS; k = k + 1) begin
+			local_write_s1(k[`REG_IDX_WIDTH-1:0], 32'hBB00_0000 + k);
+		end
+		for (k = 0; k < `NUM_RO_REGS; k = k + 1) begin
+			apb_read(`SLV1_BASE_ADDR + {k[9:0], 2'b00});
+			check_rdata(32'hBB00_0000 + k, "s1 RO reg read");
+		end
 
-        // =================================================================
-        // Test 8: Block read from slave 1 (4 words, with wait states)
-        // =================================================================
-        $display("\n========== Test 8: Block read 4 words from slave 1 (multi-cycle) ==========");
-        for (k = 0; k < 4; k = k + 1)
-            u_dut.u_master.u_local_ram.mem[8 + k] = 32'h0;
-        do_transfer(
-            .t_rw        (1'b0),
-            .t_apb_base  (13'h1004),
-            .t_local_base(4'd8),
-            .t_length    (8'd4)
-        );
-        for (k = 0; k < 4; k = k + 1)
-            check_local_ram(8 + k, 32'hB000_0000 + k);
+		// =================================================================
+		// Test 3: APB write to RO register -> PSLVERR
+		// =================================================================
+		$display("\n========== Test 3: APB write to RO reg -> PSLVERR ==========");
+		apb_write(`SLV0_BASE_ADDR + `REG0_OFFSET, 32'hFFFF_FFFF);
+		check_slverr(1'b1, "s0 RO write err");
+		// Verify data unchanged
+		apb_read(`SLV0_BASE_ADDR + `REG0_OFFSET);
+		check_rdata(32'hAA00_0000, "s0 RO unchanged");
 
-        // =================================================================
-        // Test 9: Error — access out-of-range address (PSLVERR)
-        // =================================================================
-        $display("\n========== Test 9: Out-of-range access (PSLVERR) ==========");
-        // RAM_DEPTH=16 → valid byte range 0x00-0x3F, address 0x100 is out of range
-        u_dut.u_master.u_local_ram.mem[0] = 32'hFFFF_FFFF;
-        do_transfer(
-            .t_rw        (1'b1),
-            .t_apb_base  (13'h0100),   // slave 0, out-of-range
-            .t_local_base(4'd0),
-            .t_length    (8'd1)
-        );
-        $display("[INFO] Out-of-range write completed — PSLVERR expected on bus");
+		// =================================================================
+		// Test 4: APB write/read slave 0 RW register (reg5)
+		// =================================================================
+		$display("\n========== Test 4: APB write/read slave 0 reg5 ==========");
+		apb_write(`SLV0_BASE_ADDR + `REG5_OFFSET, 32'hDEAD_BEEF);
+		check_slverr(1'b0, "s0 RW write ok");
+		apb_read(`SLV0_BASE_ADDR + `REG5_OFFSET);
+		check_rdata(32'hDEAD_BEEF, "s0 reg5 read");
 
-        // =================================================================
-        // Summary
-        // =================================================================
-        repeat (5) @(posedge pclk);
-        $display("\n==========================================");
-        if (err_cnt == 0)
-            $display("  ALL TESTS PASSED");
-        else
-            $display("  FAILED: %0d errors", err_cnt);
-        $display("==========================================\n");
-        $finish;
-    end
+		// =================================================================
+		// Test 5: APB write/read slave 0 RW register (reg14, last valid)
+		// =================================================================
+		$display("\n========== Test 5: APB write/read slave 0 reg14 ==========");
+		apb_write(`SLV0_BASE_ADDR + `REG14_OFFSET, 32'hCAFE_BABE);
+		check_slverr(1'b0, "s0 reg14 write ok");
+		apb_read(`SLV0_BASE_ADDR + `REG14_OFFSET);
+		check_rdata(32'hCAFE_BABE, "s0 reg14 read");
 
-    // -------------------------------------------------------------------------
-    // Timeout watchdog
-    // -------------------------------------------------------------------------
-    initial begin
-        #100000;
-        $display("[ERROR] Simulation timeout!");
-        $finish;
-    end
+		// =================================================================
+		// Test 6: APB write/read slave 1 RW register (reg5)
+		// =================================================================
+		$display("\n========== Test 6: APB write/read slave 1 reg5 ==========");
+		apb_write(`SLV1_BASE_ADDR + `REG5_OFFSET, 32'h1234_5678);
+		check_slverr(1'b0, "s1 RW write ok");
+		apb_read(`SLV1_BASE_ADDR + `REG5_OFFSET);
+		check_rdata(32'h1234_5678, "s1 reg5 read");
+
+		// =================================================================
+		// Test 7: Write all 10 RW regs of slave 0, read all back
+		// =================================================================
+		$display("\n========== Test 7: Write/read all slave 0 RW regs ==========");
+		for (k = 0; k < `NUM_RW_REGS; k = k + 1) begin
+			apb_write(`SLV0_BASE_ADDR + {(k[9:0] + 10'd5), 2'b00}, 32'hC000_0000 + k);
+		end
+		for (k = 0; k < `NUM_RW_REGS; k = k + 1) begin
+			apb_read(`SLV0_BASE_ADDR + {(k[9:0] + 10'd5), 2'b00});
+			check_rdata(32'hC000_0000 + k, "s0 RW bulk read");
+		end
+
+		// =================================================================
+		// Test 8: Write all 10 RW regs of slave 1, read all back
+		// =================================================================
+		$display("\n========== Test 8: Write/read all slave 1 RW regs ==========");
+		for (k = 0; k < `NUM_RW_REGS; k = k + 1) begin
+			apb_write(`SLV1_BASE_ADDR + {(k[9:0] + 10'd5), 2'b00}, 32'hD000_0000 + k);
+		end
+		for (k = 0; k < `NUM_RW_REGS; k = k + 1) begin
+			apb_read(`SLV1_BASE_ADDR + {(k[9:0] + 10'd5), 2'b00});
+			check_rdata(32'hD000_0000 + k, "s1 RW bulk read");
+		end
+
+		// =================================================================
+		// Test 9: Out-of-range access (reg15, byte addr 0x3C) -> PSLVERR
+		// =================================================================
+		$display("\n========== Test 9: Out-of-range access -> PSLVERR ==========");
+		apb_write(`SLV0_BASE_ADDR + 12'h3C, 32'hFFFF_FFFF);
+		check_slverr(1'b1, "s0 OOR write err");
+		apb_read(`SLV1_BASE_ADDR + 12'h3C);
+		check_slverr(1'b0, "s1 OOR read no err");
+
+		// =================================================================
+		// Test 10: Register overwrite verification
+		// =================================================================
+		$display("\n========== Test 10: RW register overwrite ==========");
+		apb_write(`SLV0_BASE_ADDR + `REG5_OFFSET, 32'h1111_1111);
+		apb_read(`SLV0_BASE_ADDR + `REG5_OFFSET);
+		check_rdata(32'h1111_1111, "s0 reg5 overwrite1");
+		apb_write(`SLV0_BASE_ADDR + `REG5_OFFSET, 32'h2222_2222);
+		apb_read(`SLV0_BASE_ADDR + `REG5_OFFSET);
+		check_rdata(32'h2222_2222, "s0 reg5 overwrite2");
+
+		// =================================================================
+		// Test 11: Local write + APB read (verify local port works on RW)
+		// =================================================================
+		$display("\n========== Test 11: Local write + APB read ==========");
+		local_write_s0(4'd7, 32'hFACE_FACE);
+		apb_read(`SLV0_BASE_ADDR + `REG7_OFFSET);
+		check_rdata(32'hFACE_FACE, "s0 local wr->APB rd");
+
+		// =================================================================
+		// Summary
+		// =================================================================
+		repeat (5) @(posedge pclk);
+		$display("\n==========================================");
+		if (err_cnt == 0)
+			$display("  ALL TESTS PASSED");
+		else
+			$display("  FAILED: %0d errors", err_cnt);
+		$display("==========================================\n");
+		$finish;
+	end
+
+	// -------------------------------------------------------------------------
+	// Timeout watchdog
+	// -------------------------------------------------------------------------
+	initial begin
+		#200000;
+		$display("[ERROR] Simulation timeout!");
+		$finish;
+	end
 
 endmodule
