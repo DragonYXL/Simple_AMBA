@@ -1,12 +1,12 @@
 // =============================================================================
 // Name:     simple_apb
-// Date:     2026.04.03
+// Date:     2026.04.05
 // Authors:  xlyan <dragonyxl.eminence@gmail.com>
 //
 // Function:
-// - Top level: master + interconnect + 2x (slave + reg_file) side-by-side
-// - Each reg_file has 15 registers (reg0-4 RO, reg5-14 RW from APB side)
-// - Local write ports exposed for slave logic / testbench
+// - Top level: master + interconnect + 2x slave subsystem
+// - Slave subsystem = APB interface + CDC bridge + peripheral-domain reg block
+// - Register truth lives only in the peripheral clock domain
 // =============================================================================
 
 `include "simple_apb.vh"
@@ -19,7 +19,7 @@ module simple_apb #(
 	input  wire                    pclk,
 	input  wire                    presetn,
 
-	// Slave clock domain
+	// Peripheral clock domain
 	input  wire                    sclk,
 	input  wire                    srstn,
 
@@ -32,19 +32,17 @@ module simple_apb #(
 	output wire                           done,
 	output wire                           slverr,
 
-	// Slave 0 local port (sclk domain, directly to reg_file0)
-	input  wire                           s0_local_wr_en,
-	input  wire [`REG_IDX_WIDTH-1:0]      s0_local_wr_addr,
-	input  wire [DATA_WIDTH-1:0]          s0_local_wr_data,
-	input  wire [`REG_IDX_WIDTH-1:0]      s0_local_rd_addr,
-	output wire [DATA_WIDTH-1:0]          s0_local_rd_data,
+	// Slave 0 hardware-to-register (RO status into register block)
+	input  wire [`NUM_RO_REGS*DATA_WIDTH-1:0]  s0_hw2reg_ro_value,
+	// Slave 0 register-to-hardware (RW config out of register block)
+	output wire [`NUM_RW_REGS*DATA_WIDTH-1:0]  s0_reg2hw_rw_value,
+	output wire [`NUM_RW_REGS-1:0]             s0_reg2hw_rw_write_pulse,
 
-	// Slave 1 local port (sclk domain, directly to reg_file1)
-	input  wire                           s1_local_wr_en,
-	input  wire [`REG_IDX_WIDTH-1:0]      s1_local_wr_addr,
-	input  wire [DATA_WIDTH-1:0]          s1_local_wr_data,
-	input  wire [`REG_IDX_WIDTH-1:0]      s1_local_rd_addr,
-	output wire [DATA_WIDTH-1:0]          s1_local_rd_data
+	// Slave 1 hardware-to-register (RO status into register block)
+	input  wire [`NUM_RO_REGS*DATA_WIDTH-1:0]  s1_hw2reg_ro_value,
+	// Slave 1 register-to-hardware (RW config out of register block)
+	output wire [`NUM_RW_REGS*DATA_WIDTH-1:0]  s1_reg2hw_rw_value,
+	output wire [`NUM_RW_REGS-1:0]             s1_reg2hw_rw_write_pulse
 );
 
 	// -------------------------------------------------------------------------
@@ -79,25 +77,41 @@ module simple_apb #(
 	wire                        pready_s1;
 	wire                        pslverr_s1;
 
-	// Slave 0 <-> reg_file 0 interface
-	wire                       s0_reg_clk;
-	wire                       s0_reg_rstn;
-	wire [`REG_IDX_WIDTH-1:0]  s0_reg_addr;
-	wire                       s0_reg_wr_en;
-	wire [DATA_WIDTH-1:0]      s0_reg_wr_data;
-	wire [DATA_WIDTH-1:0]      s0_reg_rd_data;
-	wire                       s0_reg_err;
-	wire                       s0_reg_busy;
+	// Slave 0 interface <-> CDC bridge
+	wire                      s0_req_valid_if;
+	wire                      s0_req_write_if;
+	wire [SLAVE_ADDR_WIDTH-1:0] s0_req_addr_if;
+	wire [DATA_WIDTH-1:0]     s0_req_wdata_if;
+	wire                      s0_rsp_ready_if;
+	wire [DATA_WIDTH-1:0]     s0_rsp_rdata_if;
+	wire                      s0_rsp_err_if;
 
-	// Slave 1 <-> reg_file 1 interface
-	wire                       s1_reg_clk;
-	wire                       s1_reg_rstn;
-	wire [`REG_IDX_WIDTH-1:0]  s1_reg_addr;
-	wire                       s1_reg_wr_en;
-	wire [DATA_WIDTH-1:0]      s1_reg_wr_data;
-	wire [DATA_WIDTH-1:0]      s1_reg_rd_data;
-	wire                       s1_reg_err;
-	wire                       s1_reg_busy;
+	// Slave 0 CDC bridge <-> peripheral register block
+	wire                      s0_req_valid_blk;
+	wire                      s0_req_write_blk;
+	wire [SLAVE_ADDR_WIDTH-1:0] s0_req_addr_blk;
+	wire [DATA_WIDTH-1:0]     s0_req_wdata_blk;
+	wire                      s0_rsp_ready_blk;
+	wire [DATA_WIDTH-1:0]     s0_rsp_rdata_blk;
+	wire                      s0_rsp_err_blk;
+
+	// Slave 1 interface <-> CDC bridge
+	wire                      s1_req_valid_if;
+	wire                      s1_req_write_if;
+	wire [SLAVE_ADDR_WIDTH-1:0] s1_req_addr_if;
+	wire [DATA_WIDTH-1:0]     s1_req_wdata_if;
+	wire                      s1_rsp_ready_if;
+	wire [DATA_WIDTH-1:0]     s1_rsp_rdata_if;
+	wire                      s1_rsp_err_if;
+
+	// Slave 1 CDC bridge <-> peripheral register block
+	wire                      s1_req_valid_blk;
+	wire                      s1_req_write_blk;
+	wire [SLAVE_ADDR_WIDTH-1:0] s1_req_addr_blk;
+	wire [DATA_WIDTH-1:0]     s1_req_wdata_blk;
+	wire                      s1_rsp_ready_blk;
+	wire [DATA_WIDTH-1:0]     s1_rsp_rdata_blk;
+	wire                      s1_rsp_err_blk;
 
 	// -------------------------------------------------------------------------
 	// Master (single-word APB bridge)
@@ -159,107 +173,147 @@ module simple_apb #(
 	);
 
 	// -------------------------------------------------------------------------
-	// Slave 0 (APB protocol adapter)
+	// Slave 0 APB interface
 	// -------------------------------------------------------------------------
-	apb_slave #(
+	apb_slave_interface #(
 		.ADDR_WIDTH (SLAVE_ADDR_WIDTH),
 		.DATA_WIDTH (DATA_WIDTH)
-	) u_slave0 (
-		.pclk           (pclk),
-		.presetn        (presetn),
-		.psel           (psel_s0),
-		.penable        (penable_s0),
-		.pwrite         (pwrite_s0),
-		.paddr          (paddr_s0),
-		.pwdata         (pwdata_s0),
-		.prdata         (prdata_s0),
-		.pready         (pready_s0),
-		.pslverr        (pslverr_s0),
-		.reg_clk        (s0_reg_clk),
-		.reg_rstn       (s0_reg_rstn),
-		.reg_addr       (s0_reg_addr),
-		.reg_wr_en      (s0_reg_wr_en),
-		.reg_wr_data    (s0_reg_wr_data),
-		.reg_rd_data    (s0_reg_rd_data),
-		.reg_err        (s0_reg_err),
-		.reg_busy       (s0_reg_busy)
+	) u_slave0_if (
+		.pclk          (pclk),
+		.presetn       (presetn),
+		.psel          (psel_s0),
+		.penable       (penable_s0),
+		.pwrite        (pwrite_s0),
+		.paddr         (paddr_s0),
+		.pwdata        (pwdata_s0),
+		.prdata        (prdata_s0),
+		.pready        (pready_s0),
+		.pslverr       (pslverr_s0),
+		.reg_req_valid (s0_req_valid_if),
+		.reg_req_write (s0_req_write_if),
+		.reg_req_addr  (s0_req_addr_if),
+		.reg_req_wdata (s0_req_wdata_if),
+		.reg_rsp_ready (s0_rsp_ready_if),
+		.reg_rsp_rdata (s0_rsp_rdata_if),
+		.reg_rsp_err   (s0_rsp_err_if)
 	);
 
-	// Register file 0 (slave0 side-by-side, dual clock domain)
-	apb_reg_file #(
-		.DATA_WIDTH  (DATA_WIDTH),
-		.NUM_REGS    (`NUM_REGS),
-		.NUM_RO_REGS (`NUM_RO_REGS),
-		.NUM_RW_REGS (`NUM_RW_REGS),
-		.IDX_WIDTH   (`REG_IDX_WIDTH)
-	) u_reg_file0 (
-		.pclk           (s0_reg_clk),
-		.prstn          (s0_reg_rstn),
-		.sclk           (sclk),
-		.srstn          (srstn),
-		.wr_en          (s0_reg_wr_en),
-		.addr           (s0_reg_addr),
-		.wr_data        (s0_reg_wr_data),
-		.rd_data        (s0_reg_rd_data),
-		.err            (s0_reg_err),
-		.busy           (s0_reg_busy),
-		.local_wr_en    (s0_local_wr_en),
-		.local_wr_addr  (s0_local_wr_addr),
-		.local_wr_data  (s0_local_wr_data),
-		.local_rd_addr  (s0_local_rd_addr),
-		.local_rd_data  (s0_local_rd_data)
-	);
-
-	// -------------------------------------------------------------------------
-	// Slave 1 (APB protocol adapter)
-	// -------------------------------------------------------------------------
-	apb_slave #(
+	reg_cdc_bridge #(
 		.ADDR_WIDTH (SLAVE_ADDR_WIDTH),
 		.DATA_WIDTH (DATA_WIDTH)
-	) u_slave1 (
-		.pclk           (pclk),
-		.presetn        (presetn),
-		.psel           (psel_s1),
-		.penable        (penable_s1),
-		.pwrite         (pwrite_s1),
-		.paddr          (paddr_s1),
-		.pwdata         (pwdata_s1),
-		.prdata         (prdata_s1),
-		.pready         (pready_s1),
-		.pslverr        (pslverr_s1),
-		.reg_clk        (s1_reg_clk),
-		.reg_rstn       (s1_reg_rstn),
-		.reg_addr       (s1_reg_addr),
-		.reg_wr_en      (s1_reg_wr_en),
-		.reg_wr_data    (s1_reg_wr_data),
-		.reg_rd_data    (s1_reg_rd_data),
-		.reg_err        (s1_reg_err),
-		.reg_busy       (s1_reg_busy)
+	) u_slave0_cdc (
+		.src_clk       (pclk),
+		.src_rstn      (presetn),
+		.src_req_valid (s0_req_valid_if),
+		.src_req_write (s0_req_write_if),
+		.src_req_addr  (s0_req_addr_if),
+		.src_req_wdata (s0_req_wdata_if),
+		.src_rsp_ready (s0_rsp_ready_if),
+		.src_rsp_rdata (s0_rsp_rdata_if),
+		.src_rsp_err   (s0_rsp_err_if),
+		.dst_clk       (sclk),
+		.dst_rstn      (srstn),
+		.dst_req_valid (s0_req_valid_blk),
+		.dst_req_write (s0_req_write_blk),
+		.dst_req_addr  (s0_req_addr_blk),
+		.dst_req_wdata (s0_req_wdata_blk),
+		.dst_rsp_ready (s0_rsp_ready_blk),
+		.dst_rsp_rdata (s0_rsp_rdata_blk),
+		.dst_rsp_err   (s0_rsp_err_blk)
 	);
 
-	// Register file 1 (slave1 side-by-side, dual clock domain)
-	apb_reg_file #(
-		.DATA_WIDTH  (DATA_WIDTH),
-		.NUM_REGS    (`NUM_REGS),
-		.NUM_RO_REGS (`NUM_RO_REGS),
-		.NUM_RW_REGS (`NUM_RW_REGS),
-		.IDX_WIDTH   (`REG_IDX_WIDTH)
-	) u_reg_file1 (
-		.pclk           (s1_reg_clk),
-		.prstn          (s1_reg_rstn),
-		.sclk           (sclk),
-		.srstn          (srstn),
-		.wr_en          (s1_reg_wr_en),
-		.addr           (s1_reg_addr),
-		.wr_data        (s1_reg_wr_data),
-		.rd_data        (s1_reg_rd_data),
-		.err            (s1_reg_err),
-		.busy           (s1_reg_busy),
-		.local_wr_en    (s1_local_wr_en),
-		.local_wr_addr  (s1_local_wr_addr),
-		.local_wr_data  (s1_local_wr_data),
-		.local_rd_addr  (s1_local_rd_addr),
-		.local_rd_data  (s1_local_rd_data)
+	slave_reg_block #(
+		.ADDR_WIDTH   (SLAVE_ADDR_WIDTH),
+		.DATA_WIDTH   (DATA_WIDTH),
+		.NUM_REGS     (`NUM_REGS),
+		.NUM_RO_REGS  (`NUM_RO_REGS),
+		.NUM_RW_REGS  (`NUM_RW_REGS),
+		.IDX_WIDTH    (`REG_IDX_WIDTH)
+	) u_slave0_regs (
+		.periph_clk            (sclk),
+		.periph_rstn           (srstn),
+		.reg_req_valid         (s0_req_valid_blk),
+		.reg_req_write         (s0_req_write_blk),
+		.reg_req_addr          (s0_req_addr_blk),
+		.reg_req_wdata         (s0_req_wdata_blk),
+		.reg_rsp_ready         (s0_rsp_ready_blk),
+		.reg_rsp_rdata         (s0_rsp_rdata_blk),
+		.reg_rsp_err           (s0_rsp_err_blk),
+		.reg2hw_rw_value       (s0_reg2hw_rw_value),
+		.reg2hw_rw_write_pulse (s0_reg2hw_rw_write_pulse),
+		.hw2reg_ro_value       (s0_hw2reg_ro_value)
+	);
+
+	// -------------------------------------------------------------------------
+	// Slave 1 APB interface
+	// -------------------------------------------------------------------------
+	apb_slave_interface #(
+		.ADDR_WIDTH (SLAVE_ADDR_WIDTH),
+		.DATA_WIDTH (DATA_WIDTH)
+	) u_slave1_if (
+		.pclk          (pclk),
+		.presetn       (presetn),
+		.psel          (psel_s1),
+		.penable       (penable_s1),
+		.pwrite        (pwrite_s1),
+		.paddr         (paddr_s1),
+		.pwdata        (pwdata_s1),
+		.prdata        (prdata_s1),
+		.pready        (pready_s1),
+		.pslverr       (pslverr_s1),
+		.reg_req_valid (s1_req_valid_if),
+		.reg_req_write (s1_req_write_if),
+		.reg_req_addr  (s1_req_addr_if),
+		.reg_req_wdata (s1_req_wdata_if),
+		.reg_rsp_ready (s1_rsp_ready_if),
+		.reg_rsp_rdata (s1_rsp_rdata_if),
+		.reg_rsp_err   (s1_rsp_err_if)
+	);
+
+	reg_cdc_bridge #(
+		.ADDR_WIDTH (SLAVE_ADDR_WIDTH),
+		.DATA_WIDTH (DATA_WIDTH)
+	) u_slave1_cdc (
+		.src_clk       (pclk),
+		.src_rstn      (presetn),
+		.src_req_valid (s1_req_valid_if),
+		.src_req_write (s1_req_write_if),
+		.src_req_addr  (s1_req_addr_if),
+		.src_req_wdata (s1_req_wdata_if),
+		.src_rsp_ready (s1_rsp_ready_if),
+		.src_rsp_rdata (s1_rsp_rdata_if),
+		.src_rsp_err   (s1_rsp_err_if),
+		.dst_clk       (sclk),
+		.dst_rstn      (srstn),
+		.dst_req_valid (s1_req_valid_blk),
+		.dst_req_write (s1_req_write_blk),
+		.dst_req_addr  (s1_req_addr_blk),
+		.dst_req_wdata (s1_req_wdata_blk),
+		.dst_rsp_ready (s1_rsp_ready_blk),
+		.dst_rsp_rdata (s1_rsp_rdata_blk),
+		.dst_rsp_err   (s1_rsp_err_blk)
+	);
+
+	slave_reg_block #(
+		.ADDR_WIDTH   (SLAVE_ADDR_WIDTH),
+		.DATA_WIDTH   (DATA_WIDTH),
+		.NUM_REGS     (`NUM_REGS),
+		.NUM_RO_REGS  (`NUM_RO_REGS),
+		.NUM_RW_REGS  (`NUM_RW_REGS),
+		.IDX_WIDTH    (`REG_IDX_WIDTH)
+	) u_slave1_regs (
+		.periph_clk            (sclk),
+		.periph_rstn           (srstn),
+		.reg_req_valid         (s1_req_valid_blk),
+		.reg_req_write         (s1_req_write_blk),
+		.reg_req_addr          (s1_req_addr_blk),
+		.reg_req_wdata         (s1_req_wdata_blk),
+		.reg_rsp_ready         (s1_rsp_ready_blk),
+		.reg_rsp_rdata         (s1_rsp_rdata_blk),
+		.reg_rsp_err           (s1_rsp_err_blk),
+		.reg2hw_rw_value       (s1_reg2hw_rw_value),
+		.reg2hw_rw_write_pulse (s1_reg2hw_rw_write_pulse),
+		.hw2reg_ro_value       (s1_hw2reg_ro_value)
 	);
 
 endmodule

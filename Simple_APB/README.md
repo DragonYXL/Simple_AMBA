@@ -2,37 +2,46 @@
 
 ## 1. 总览
 
-Simple APB 是一个双时钟域 APB 寄存器访问子系统，包含：
+Simple APB 是一个双时钟域 APB 寄存器访问子系统，结构如下：
 
-- 一个 `apb_master`，把 `start/write/addr/wdata` 命令接口转换成单次 APB 访问
-- 一个 `apb_interconnect`，完成 1:2 slave 地址译码
-- 两组 `apb_slave + apb_reg_file`
+- `apb_master`：把 `start/write/addr/wdata` 命令接口转换成单次 APB 访问
+- `apb_interconnect`：完成 1:2 slave 地址译码
+- 每个 slave 子系统由三层组成：
+  - `apb_slave_interface`
+  - `reg_cdc_bridge`
+  - `slave_reg_block`
 
-每个 `apb_reg_file` 内有 15 个 32-bit 寄存器：
+新的架构中，寄存器真值只保存在外设时钟域 `sclk` 中。APB 访问通过请求/响应方式跨时钟域完成，不再使用 `pclk` 域 shadow 寄存器。
 
-- `REG0` 到 `REG4` 为 RO，APB 侧只读，`sclk` 本地侧可写
-- `REG5` 到 `REG14` 为 RW，APB 侧可读写，`sclk` 本地侧只读
-
-`pclk` 域和 `sclk` 域之间通过 `pulse_handshake` 做跨时钟同步。
-
-## 2. 项目结构
+## 2. 架构分层
 
 ```text
 simple_apb
 ├── apb_master
 ├── apb_interconnect
-├── apb_slave x2
-└── apb_reg_file x2
-    ├── apb_regs_pclk
-    ├── apb_regs_sclk
-    ├── pulse_handshake  (RW: pclk -> sclk)
-    └── pulse_handshake  (RO: sclk -> pclk)
+├── slave0
+│   ├── apb_slave_interface
+│   ├── reg_cdc_bridge
+│   └── slave_reg_block
+└── slave1
+    ├── apb_slave_interface
+    ├── reg_cdc_bridge
+    └── slave_reg_block
 ```
 
-`apb_slave` 和 `apb_reg_file` 是并列关系：
+各层职责：
 
-- `apb_slave` 负责 APB 协议适配
-- `apb_reg_file` 负责寄存器存储和 CDC
+- `apb_slave_interface`
+  - 只负责 APB 协议适配
+  - 把 APB SETUP/ACCESS 转换成单笔寄存器请求
+  - 等待后端响应并驱动 `PREADY/PRDATA/PSLVERR`
+- `reg_cdc_bridge`
+  - 只负责 `pclk` 与 `sclk` 之间的请求/响应 CDC
+  - 单次只允许一笔事务在途
+- `slave_reg_block`
+  - 是寄存器唯一真值所在
+  - 负责地址合法性、RO/RW 权限和寄存器语义
+  - 向外设逻辑暴露 `reg2hw/hw2reg` 风格接口
 
 ## 3. 顶层接口
 
@@ -42,8 +51,8 @@ simple_apb
 |------|------|------|------|
 | `pclk` | input | 1 | APB 时钟 |
 | `presetn` | input | 1 | APB 复位，低有效 |
-| `sclk` | input | 1 | slave 本地时钟 |
-| `srstn` | input | 1 | slave 本地复位，低有效 |
+| `sclk` | input | 1 | 外设寄存器时钟域 |
+| `srstn` | input | 1 | 外设寄存器复位，低有效 |
 
 ### 命令接口
 
@@ -57,17 +66,22 @@ simple_apb
 | `done` | output | 1 | 访问完成，`ACCESS` 当拍有效 |
 | `slverr` | output | 1 | 错误响应，和 `done` 同拍 |
 
-### slave 本地接口
+### `hw2reg / reg2hw` 接口
 
-每个 slave 都有一组本地接口，位于 `sclk` 域：
+每个 slave 都有一组面向外设逻辑的接口。
+
+#### `hw2reg`
 
 | 信号 | 方向 | 位宽 | 说明 |
 |------|------|------|------|
-| `sX_local_wr_en` | input | 1 | 本地写使能，只允许写 RO 寄存器 |
-| `sX_local_wr_addr` | input | 4 | 本地写地址 |
-| `sX_local_wr_data` | input | 32 | 本地写数据 |
-| `sX_local_rd_addr` | input | 4 | 本地读地址 |
-| `sX_local_rd_data` | output | 32 | 本地读数据，组合输出 |
+| `sX_hw2reg_ro_value` | input | `5*32` | `REG0-4` 的 RO 状态值，来自外设逻辑 |
+
+#### `reg2hw`
+
+| 信号 | 方向 | 位宽 | 说明 |
+|------|------|------|------|
+| `sX_reg2hw_rw_value` | output | `10*32` | `REG5-14` 的当前 RW 配置值 |
+| `sX_reg2hw_rw_write_pulse` | output | `10` | 软件成功写 `REG5-14` 时产生的单拍脉冲 |
 
 其中 `X` 为 `0` 或 `1`。
 
@@ -80,111 +94,79 @@ simple_apb
 | Slave 0 | `0x0000` | `0x0000 - 0x0FFF` | 4KB |
 | Slave 1 | `0x1000` | `0x1000 - 0x1FFF` | 4KB |
 
-地址译码由 [`simple_apb.vh`](src/simple_apb.vh) 中的宏定义控制。
+每个 slave 的 4KB 窗口中，当前只实现 15 个 32-bit 寄存器：
 
-### slave 内部寄存器窗口
-
-虽然每个 slave 保留了 4KB 地址空间，但当前只实现了 15 个寄存器，合法偏移如下：
-
-| 寄存器 | 索引 | 偏移 | APB 权限 | 本地权限 |
-|--------|------|------|---------|---------|
-| REG0 | 0 | `0x00` | RO | RW |
-| REG1 | 1 | `0x04` | RO | RW |
-| REG2 | 2 | `0x08` | RO | RW |
-| REG3 | 3 | `0x0C` | RO | RW |
-| REG4 | 4 | `0x10` | RO | RW |
-| REG5 | 5 | `0x14` | RW | RO |
-| REG6 | 6 | `0x18` | RW | RO |
-| REG7 | 7 | `0x1C` | RW | RO |
-| REG8 | 8 | `0x20` | RW | RO |
-| REG9 | 9 | `0x24` | RW | RO |
-| REG10 | 10 | `0x28` | RW | RO |
-| REG11 | 11 | `0x2C` | RW | RO |
-| REG12 | 12 | `0x30` | RW | RO |
-| REG13 | 13 | `0x34` | RW | RO |
-| REG14 | 14 | `0x38` | RW | RO |
+| 寄存器 | 索引 | 偏移 | APB 权限 | 外设逻辑语义 |
+|--------|------|------|---------|-------------|
+| REG0 | 0 | `0x00` | RO | `hw2reg` 状态输入 |
+| REG1 | 1 | `0x04` | RO | `hw2reg` 状态输入 |
+| REG2 | 2 | `0x08` | RO | `hw2reg` 状态输入 |
+| REG3 | 3 | `0x0C` | RO | `hw2reg` 状态输入 |
+| REG4 | 4 | `0x10` | RO | `hw2reg` 状态输入 |
+| REG5 | 5 | `0x14` | RW | `reg2hw` 配置输出 |
+| REG6 | 6 | `0x18` | RW | `reg2hw` 配置输出 |
+| REG7 | 7 | `0x1C` | RW | `reg2hw` 配置输出 |
+| REG8 | 8 | `0x20` | RW | `reg2hw` 配置输出 |
+| REG9 | 9 | `0x24` | RW | `reg2hw` 配置输出 |
+| REG10 | 10 | `0x28` | RW | `reg2hw` 配置输出 |
+| REG11 | 11 | `0x2C` | RW | `reg2hw` 配置输出 |
+| REG12 | 12 | `0x30` | RW | `reg2hw` 配置输出 |
+| REG13 | 13 | `0x34` | RW | `reg2hw` 配置输出 |
+| REG14 | 14 | `0x38` | RW | `reg2hw` 配置输出 |
 
 非法访问规则：
 
-- 访问 `0x3C`，即索引 `15`，返回 `PSLVERR`
-- 访问 `0x40` 及以上偏移，不再镜像到低地址寄存器，统一返回 `PSLVERR`
-- APB 写 `REG0` 到 `REG4`，返回 `PSLVERR`
+- `0x3C` 非法
+- `0x40` 及以上偏移非法
+- 非 32-bit 对齐访问非法
+- APB 写 `REG0-4` 非法
+
+以上非法访问都会在完成拍返回 `PSLVERR`。
 
 ## 5. 模块说明
 
-### 5.1 `apb_master`
+### 5.1 `apb_slave_interface`
 
-`apb_master` 使用三态 FSM：
+`apb_slave_interface` 在 `pclk` 域工作：
 
-```text
-IDLE -> SETUP -> ACCESS -> IDLE
-```
+- 在 APB SETUP 周期发起一笔寄存器请求
+- 在 ACCESS 周期等待后端响应
+- 当响应返回时，拉高 `PREADY`
 
-行为如下：
+因此当前 slave 访问天然支持 wait-state，不再要求 APB 单周期完成。
 
-- `IDLE`：等待 `start`
-- `SETUP`：输出 `PSEL=1, PENABLE=0`
-- `ACCESS`：输出 `PSEL=1, PENABLE=1`，等待 `PREADY`
+### 5.2 `reg_cdc_bridge`
 
-`done` 和 `slverr` 是组合输出，在 `ACCESS && PREADY` 当拍有效。
+`reg_cdc_bridge` 负责 `pclk -> sclk -> pclk` 的请求/响应往返：
 
-### 5.2 `apb_interconnect`
+- `pclk` 域发起一笔 `reg_req`
+- 请求跨域到 `sclk`
+- `slave_reg_block` 执行访问并生成 `reg_rsp`
+- 响应跨域返回 `pclk`
 
-`apb_interconnect` 是纯组合逻辑：
+当前实现只支持单笔事务在途。
 
-- 根据地址高位选择 slave 0 或 slave 1
-- `penable/pwrite/pwdata` 广播给全部 slave
-- `psel` 按地址选通
-- `prdata/pready/pslverr` 从目标 slave 复用回 master
+### 5.3 `slave_reg_block`
 
-### 5.3 `apb_slave`
+`slave_reg_block` 在 `sclk` 域工作，是寄存器的唯一真值源：
 
-`apb_slave` 负责把 APB 事务转换成寄存器文件接口：
+- `REG5-14` 使用内部 RW 存储
+- `REG0-4` 直接来自 `hw2reg`
+- 成功写 RW 寄存器时，产生对应 `reg2hw_rw_write_pulse`
+- 所有地址和权限检查都在这里完成
 
-- `reg_addr = paddr[5:2]`
-- `reg_wr_en = access_phase & pwrite & pready`
-- `prdata` 只在合法读访问完成时输出
-- 非法偏移或寄存器权限错误时输出 `PSLVERR`
+## 6. 设计取向
 
-### 5.4 `apb_reg_file`
+这版架构的核心取向是：
 
-`apb_reg_file` 协调两个时钟域：
+- `master` 和 `interconnect` 尽量保持不变
+- slave 侧 APB 接口与寄存器实现、CDC 机制解耦
+- RO/RW 访问统一走请求/响应模型
+- 不再维护 `pclk` 域 shadow 寄存器
 
-- `apb_regs_pclk` 保存 RW 寄存器和 RO shadow
-- `apb_regs_sclk` 保存 RO 寄存器和 RW shadow
-- 两个 `pulse_handshake` 分别处理 RW 和 RO 更新脉冲
+这种写法更接近“协议 wrapper + CDC bridge + peripheral-domain reg block”的工业分层方式。
 
-数据流如下：
-
-```text
-RW 路径:
-  APB write -> pclk RW regs -> CDC pulse -> sclk RW shadow
-
-RO 路径:
-  local write -> sclk RO regs -> CDC pulse -> pclk RO shadow
-```
-
-### 5.5 busy 行为
-
-当前实现中：
-
-- `busy` 来自 RW 方向 CDC 的 `busy_src`
-- 当 RW 同步尚未完成时，`apb_slave` 会把 `PREADY` 拉低
-- 这会阻塞该 slave 上的全部 APB 访问，不区分读写
-
-也就是说，`busy` 现在表达的是“该 slave 正在等待一次 pclk->sclk 的 RW 同步完成”，而不是“仅阻塞下一笔写”。
-
-### 5.6 RO 同步策略说明
-
-当前 RO 路径是“宽松同步”：
-
-- `sclk` 侧本地写先更新本地 RO 寄存器
-- 再通过 pulse CDC 把更新通知到 `pclk` 侧 shadow
-- APB 读取的是 `pclk` 侧 shadow，因此短时间内可能读到旧值
-
-如果 `sclk` 侧在前一次 RO 同步完成前连续更新多次，后续脉冲可能被合并或丢弃。这个行为适合“状态类寄存器”，不适合要求逐次事件不丢失的计数器或 FIFO 状态上报。
-
-## 6. 文件列表
+## 7. 文件列表
 
 ```text
 Simple_APB/
@@ -193,10 +175,9 @@ Simple_APB/
 │   ├── simple_apb.v
 │   ├── apb_master.v
 │   ├── apb_interconnect.v
-│   ├── apb_slave.v
-│   ├── apb_reg_file.v
-│   ├── apb_regs_pclk.v
-│   ├── apb_regs_sclk.v
+│   ├── apb_slave_interface.v
+│   ├── reg_cdc_bridge.v
+│   ├── slave_reg_block.v
 │   └── handshake_cdc.v
 ├── include/
 │   ├── rtl_filelist.f
