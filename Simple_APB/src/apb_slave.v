@@ -9,6 +9,7 @@
 // - SETUP phase: address decode and read data preparation
 // - ACCESS phase: execute write, confirm transfer
 // - pready gated by busy (RW CDC in flight, pclk domain)
+// - accesses outside implemented register window return PSLVERR
 // - prdata held at 0 outside valid ACCESS window
 // =============================================================================
 
@@ -57,12 +58,14 @@ module apb_slave #(
 	// -------------------------------------------------------------------------
 	// Register file address (driven from SETUP, held into ACCESS)
 	// -------------------------------------------------------------------------
+	wire reg_space_hit;
 	assign reg_addr = paddr[`REG_IDX_WIDTH+1:2];
+	assign reg_space_hit = ~|paddr[ADDR_WIDTH-1:`REG_IDX_WIDTH+2];
 
 	// -------------------------------------------------------------------------
 	// Register file write (ACCESS + pready + write)
 	// -------------------------------------------------------------------------
-	assign reg_wr_en   = access_phase & pwrite & pready;
+	assign reg_wr_en   = access_phase & pwrite & pready & reg_space_hit;
 	assign reg_wr_data = pwdata;
 
 	// -------------------------------------------------------------------------
@@ -72,9 +75,11 @@ module apb_slave #(
 	assign pready  = access_phase ? ~reg_busy : 1'b1;
 
 	// prdata: only valid during ACCESS with pready, otherwise 0
-	assign prdata  = (access_phase & pready & ~pwrite) ? reg_rd_data : {DATA_WIDTH{1'b0}};
+	assign prdata  = (access_phase & pready & ~pwrite & reg_space_hit)
+	               ? reg_rd_data
+	               : {DATA_WIDTH{1'b0}};
 
-	// pslverr: unified error from reg_file, only on completed ACCESS
-	assign pslverr = access_phase & pready & reg_err;
+	// pslverr: invalid local offset or reg_file error, only on completed ACCESS
+	assign pslverr = access_phase & pready & (~reg_space_hit | reg_err);
 
 endmodule

@@ -2,205 +2,212 @@
 
 ## 1. 总览
 
-Simple APB 是一个基于 AMBA APB 协议的双时钟域寄存器访问子系统。系统包含一个 APB master（协议桥）、一个 1:2 地址译码互联、两组 slave + 寄存器文件。每个寄存器文件包含 15 个 32-bit 寄存器（5 个只读 + 10 个读写），支持 APB 总线侧（pclk）和 slave 逻辑侧（sclk）的双时钟域访问，通过 pulse handshake CDC 进行跨时钟域同步。
+Simple APB 是一个双时钟域 APB 寄存器访问子系统，包含：
 
-**设计特性：**
-- 符合 AMBA APB 协议（无 PPROT，保留 PSTRB/PSLVERR）
-- 双时钟域寄存器文件，RW/RO 影子寄存器 + CDC 握手
-- 参数化设计：地址宽度、数据宽度、寄存器数量均可配置
-- 地址映射通过 `simple_apb.vh` 头文件统一管理
+- 一个 `apb_master`，把 `start/write/addr/wdata` 命令接口转换成单次 APB 访问
+- 一个 `apb_interconnect`，完成 1:2 slave 地址译码
+- 两组 `apb_slave + apb_reg_file`
 
-## 2. 项目架构
+每个 `apb_reg_file` 内有 15 个 32-bit 寄存器：
 
+- `REG0` 到 `REG4` 为 RO，APB 侧只读，`sclk` 本地侧可写
+- `REG5` 到 `REG14` 为 RW，APB 侧可读写，`sclk` 本地侧只读
+
+`pclk` 域和 `sclk` 域之间通过 `pulse_handshake` 做跨时钟同步。
+
+## 2. 项目结构
+
+```text
+simple_apb
+├── apb_master
+├── apb_interconnect
+├── apb_slave x2
+└── apb_reg_file x2
+    ├── apb_regs_pclk
+    ├── apb_regs_sclk
+    ├── pulse_handshake  (RW: pclk -> sclk)
+    └── pulse_handshake  (RO: sclk -> pclk)
 ```
-simple_apb (顶层)
-├── apb_master              APB 协议桥 (pclk)
-├── apb_interconnect        1:2 地址译码 (组合逻辑)
-│
-├── apb_slave (×2)          APB 协议适配器 (pclk, 组合逻辑)
-│   └─ 输出通用读写信号 ──→
-│
-└── apb_reg_file (×2)       双时钟域寄存器管理 (pclk + sclk)
-    ├── apb_regs_pclk       RW 寄存器 + RO 影子寄存器 (pclk)
-    ├── apb_regs_sclk       RO 寄存器 + RW 影子寄存器 (sclk)
-    ├── pulse_handshake     RW 更新 CDC (pclk → sclk)
-    └── pulse_handshake     RO 更新 CDC (sclk → pclk)
-```
 
-slave 与 reg_file 是**同级关系**，均在顶层实例化。slave 只负责 APB 协议转换，reg_file 只负责寄存器存储和跨时钟域同步。
+`apb_slave` 和 `apb_reg_file` 是并列关系：
 
-## 3. 顶层 IO 说明
+- `apb_slave` 负责 APB 协议适配
+- `apb_reg_file` 负责寄存器存储和 CDC
+
+## 3. 顶层接口
 
 ### 时钟与复位
 
 | 信号 | 方向 | 位宽 | 说明 |
 |------|------|------|------|
-| `pclk` | input | 1 | APB 总线时钟 |
-| `presetn` | input | 1 | APB 复位（低有效） |
-| `sclk` | input | 1 | Slave 逻辑时钟 |
-| `srstn` | input | 1 | Slave 复位（低有效） |
+| `pclk` | input | 1 | APB 时钟 |
+| `presetn` | input | 1 | APB 复位，低有效 |
+| `sclk` | input | 1 | slave 本地时钟 |
+| `srstn` | input | 1 | slave 本地复位，低有效 |
 
-### 命令接口（pclk 域）
+### 命令接口
 
 | 信号 | 方向 | 位宽 | 说明 |
 |------|------|------|------|
-| `start` | input | 1 | 脉冲触发一次传输 |
-| `write` | input | 1 | 1=写，0=读 |
-| `addr` | input | 13 | 目标地址 |
+| `start` | input | 1 | 触发一次 APB 访问 |
+| `write` | input | 1 | `1` 为写，`0` 为读 |
+| `addr` | input | 13 | APB 地址 |
 | `wdata` | input | 32 | 写数据 |
-| `strb` | input | 4 | 字节写使能 |
-| `rdata` | output | 32 | 读数据（寄存器输出，done 后一拍有效） |
-| `done` | output | 1 | 传输完成（组合逻辑，ACCESS 当拍有效） |
-| `slverr` | output | 1 | 错误标志（组合逻辑，与 done 同步） |
+| `rdata` | output | 32 | 读数据寄存结果 |
+| `done` | output | 1 | 访问完成，`ACCESS` 当拍有效 |
+| `slverr` | output | 1 | 错误响应，和 `done` 同拍 |
 
-### Slave 本地端口（sclk 域，每个 slave 一组）
+### slave 本地接口
+
+每个 slave 都有一组本地接口，位于 `sclk` 域：
 
 | 信号 | 方向 | 位宽 | 说明 |
 |------|------|------|------|
-| `sX_local_wr_en` | input | 1 | 本地写使能（仅写 RO 寄存器） |
-| `sX_local_wr_addr` | input | 4 | 写地址（寄存器索引） |
-| `sX_local_wr_data` | input | 32 | 写数据 |
-| `sX_local_rd_addr` | input | 4 | 读地址（寄存器索引） |
-| `sX_local_rd_data` | output | 32 | 读数据（组合输出） |
+| `sX_local_wr_en` | input | 1 | 本地写使能，只允许写 RO 寄存器 |
+| `sX_local_wr_addr` | input | 4 | 本地写地址 |
+| `sX_local_wr_data` | input | 32 | 本地写数据 |
+| `sX_local_rd_addr` | input | 4 | 本地读地址 |
+| `sX_local_rd_data` | output | 32 | 本地读数据，组合输出 |
 
-> `sX` 代表 `s0`（slave 0）或 `s1`（slave 1）。
+其中 `X` 为 `0` 或 `1`。
 
-## 4. 地址区间说明
+## 4. 地址映射
+
+顶层 APB 地址宽度固定为 13 bit。
 
 | Slave | 基地址 | 地址范围 | 地址空间 |
 |-------|--------|---------|---------|
 | Slave 0 | `0x0000` | `0x0000 - 0x0FFF` | 4KB |
 | Slave 1 | `0x1000` | `0x1000 - 0x1FFF` | 4KB |
 
-地址译码方式：`(paddr & ~SLV_ADDR_MASK) == SLV_BASE_ADDR`，通过掩码比较实现。修改地址映射只需更改 `simple_apb.vh` 中的宏定义。
+地址译码由 [`simple_apb.vh`](src/simple_apb.vh) 中的宏定义控制。
 
-slave 内部地址译码：`reg_idx = paddr[5:2]`，取字对齐后的 4-bit 索引。
+### slave 内部寄存器窗口
 
-## 5. Slave 寄存器表
+虽然每个 slave 保留了 4KB 地址空间，但当前只实现了 15 个寄存器，合法偏移如下：
 
-每个 slave 包含 15 个 32-bit 寄存器，地址布局相同：
+| 寄存器 | 索引 | 偏移 | APB 权限 | 本地权限 |
+|--------|------|------|---------|---------|
+| REG0 | 0 | `0x00` | RO | RW |
+| REG1 | 1 | `0x04` | RO | RW |
+| REG2 | 2 | `0x08` | RO | RW |
+| REG3 | 3 | `0x0C` | RO | RW |
+| REG4 | 4 | `0x10` | RO | RW |
+| REG5 | 5 | `0x14` | RW | RO |
+| REG6 | 6 | `0x18` | RW | RO |
+| REG7 | 7 | `0x1C` | RW | RO |
+| REG8 | 8 | `0x20` | RW | RO |
+| REG9 | 9 | `0x24` | RW | RO |
+| REG10 | 10 | `0x28` | RW | RO |
+| REG11 | 11 | `0x2C` | RW | RO |
+| REG12 | 12 | `0x30` | RW | RO |
+| REG13 | 13 | `0x34` | RW | RO |
+| REG14 | 14 | `0x38` | RW | RO |
 
-| 寄存器 | 索引 | 字节偏移 | APB 权限 | 本地权限 | 说明 |
-|--------|------|---------|---------|---------|------|
-| REG0 | 0 | 0x00 | 只读 | 读写 | RO 寄存器，slave 逻辑写入 |
-| REG1 | 1 | 0x04 | 只读 | 读写 | RO 寄存器 |
-| REG2 | 2 | 0x08 | 只读 | 读写 | RO 寄存器 |
-| REG3 | 3 | 0x0C | 只读 | 读写 | RO 寄存器 |
-| REG4 | 4 | 0x10 | 只读 | 读写 | RO 寄存器 |
-| REG5 | 5 | 0x14 | 读写 | 只读 | RW 寄存器，APB master 写入 |
-| REG6 | 6 | 0x18 | 读写 | 只读 | RW 寄存器 |
-| REG7 | 7 | 0x1C | 读写 | 只读 | RW 寄存器 |
-| REG8 | 8 | 0x20 | 读写 | 只读 | RW 寄存器 |
-| REG9 | 9 | 0x24 | 读写 | 只读 | RW 寄存器 |
-| REG10 | 10 | 0x28 | 读写 | 只读 | RW 寄存器 |
-| REG11 | 11 | 0x2C | 读写 | 只读 | RW 寄存器 |
-| REG12 | 12 | 0x30 | 读写 | 只读 | RW 寄存器 |
-| REG13 | 13 | 0x34 | 读写 | 只读 | RW 寄存器 |
-| REG14 | 14 | 0x38 | 读写 | 只读 | RW 寄存器 |
+非法访问规则：
 
-**错误响应（PSLVERR）：**
-- APB 写 RO 寄存器（REG0-4）→ PSLVERR=1，数据不写入
-- 访问不存在的地址（索引 ≥ 15）→ PSLVERR=1
+- 访问 `0x3C`，即索引 `15`，返回 `PSLVERR`
+- 访问 `0x40` 及以上偏移，不再镜像到低地址寄存器，统一返回 `PSLVERR`
+- APB 写 `REG0` 到 `REG4`，返回 `PSLVERR`
 
-**RO/RW 判断方式：** 使用位掩码查表 `RO_MASK[addr]`，综合为单个 LUT，无比较器开销。
+## 5. 模块说明
 
-## 6. 模块设计说明
+### 5.1 `apb_master`
 
-### 6.1 apb_master — APB 协议桥
+`apb_master` 使用三态 FSM：
 
-将外部命令接口转换为标准 APB 协议时序。
-
-**FSM（3 状态）：**
-```
-IDLE ──(start)──→ SETUP ──→ ACCESS ──(pready)──→ IDLE
+```text
+IDLE -> SETUP -> ACCESS -> IDLE
 ```
 
-- **IDLE**：等待 `start` 脉冲。收到后锁存 `addr/wdata/write/strb`，同时驱动 `psel=1` 为下一周期的 SETUP 准备。
-- **SETUP**：`PSEL=1, PENABLE=0`。驱动 `penable=1` 为下一周期的 ACCESS 准备。
-- **ACCESS**：`PSEL=1, PENABLE=1`。等待 `pready`，完成后锁存 `prdata` 到 `rdata`，清零总线信号回到 IDLE。
+行为如下：
 
-`done` 和 `slverr` 为组合输出（`state==ACCESS & pready`），在 ACCESS 当拍通知上层，节省一个周期。
+- `IDLE`：等待 `start`
+- `SETUP`：输出 `PSEL=1, PENABLE=0`
+- `ACCESS`：输出 `PSEL=1, PENABLE=1`，等待 `PREADY`
 
-### 6.2 apb_interconnect — 地址译码互联
+`done` 和 `slverr` 是组合输出，在 `ACCESS && PREADY` 当拍有效。
 
-纯组合逻辑。根据地址的高位与基地址掩码比较，选择目标 slave。共享信号（penable/pwrite/pwdata/pstrb）广播给所有 slave，仅 PSEL 按地址选通。返回方向的 prdata/pready/pslverr 通过 MUX 回传 master。
+### 5.2 `apb_interconnect`
 
-### 6.3 apb_slave — APB 协议适配器
+`apb_interconnect` 是纯组合逻辑：
 
-纯组合逻辑模块（无寄存器），将 APB 协议信号转换为通用的寄存器读写信号。
+- 根据地址高位选择 slave 0 或 slave 1
+- `penable/pwrite/pwdata` 广播给全部 slave
+- `psel` 按地址选通
+- `prdata/pready/pslverr` 从目标 slave 复用回 master
 
-- 地址译码：`paddr[5:2]` 提取寄存器索引
-- 写使能：`access_phase & pwrite & pready`
-- PREADY：`access_phase ? ~reg_busy : 1'b1`（CDC 忙时等待）
-- PRDATA：仅在完成的读 ACCESS 时输出有效数据，其余时间为 0
-- 时钟传递：将 `pclk/presetn` 传递给 reg_file 作为 pclk 域时钟
+### 5.3 `apb_slave`
 
-### 6.4 apb_reg_file — 双时钟域寄存器管理
+`apb_slave` 负责把 APB 事务转换成寄存器文件接口：
 
-协调 pclk 和 sclk 两个时钟域的寄存器访问，内部例化：
-- `apb_regs_pclk`：pclk 域的 RW 寄存器和 RO 影子寄存器
-- `apb_regs_sclk`：sclk 域的 RO 寄存器和 RW 影子寄存器
-- 2 个 `pulse_handshake` CDC 模块
+- `reg_addr = paddr[5:2]`
+- `reg_wr_en = access_phase & pwrite & pready`
+- `prdata` 只在合法读访问完成时输出
+- 非法偏移或寄存器权限错误时输出 `PSLVERR`
 
-**数据流：**
+### 5.4 `apb_reg_file`
 
+`apb_reg_file` 协调两个时钟域：
+
+- `apb_regs_pclk` 保存 RW 寄存器和 RO shadow
+- `apb_regs_sclk` 保存 RO 寄存器和 RW shadow
+- 两个 `pulse_handshake` 分别处理 RW 和 RO 更新脉冲
+
+数据流如下：
+
+```text
+RW 路径:
+  APB write -> pclk RW regs -> CDC pulse -> sclk RW shadow
+
+RO 路径:
+  local write -> sclk RO regs -> CDC pulse -> pclk RO shadow
 ```
-RW 路径 (APB 写 → slave 读)：
-  APB 写入 → RW regs (pclk) ──CDC pulse──→ RW shadow (sclk)
 
-RO 路径 (slave 写 → APB 读)：
-  local 写入 → RO regs (sclk) ──CDC pulse──→ RO shadow (pclk) → APB 读取
-```
+### 5.5 busy 行为
 
-**busy 机制：** `busy = rw_cdc_busy`，来自 `pulse_handshake` 的 `busy_src` 输出，在 pclk 域内直接使用。APB 写入 RW 寄存器后，CDC 握手完成前 `pready=0` 阻止下一笔写入。RO 方向采用宽松模式，APB 读可能读到旧值，不产生 busy。
+当前实现中：
 
-### 6.5 apb_regs_pclk — pclk 域寄存器
+- `busy` 来自 RW 方向 CDC 的 `busy_src`
+- 当 RW 同步尚未完成时，`apb_slave` 会把 `PREADY` 拉低
+- 这会阻塞该 slave 上的全部 APB 访问，不区分读写
 
-- **RW regs [10]**：APB master 直接写入和读取。写入后产生 `rw_update_pulse` 通知 sclk 域。
-- **RO shadow [5]**：接收 sclk 域 CDC 同步过来的 RO 寄存器值。收到 `ro_update_pulse` 时批量更新。
-- **读 MUX**：`addr ∈ [0,4]` 读 RO shadow，`addr ∈ [5,14]` 读 RW regs。
+也就是说，`busy` 现在表达的是“该 slave 正在等待一次 pclk->sclk 的 RW 同步完成”，而不是“仅阻塞下一笔写”。
 
-### 6.6 apb_regs_sclk — sclk 域寄存器
+### 5.6 RO 同步策略说明
 
-- **RO regs [5]**：slave 本地逻辑写入。写入后产生 `ro_update_pulse` 通知 pclk 域。
-- **RW shadow [10]**：接收 pclk 域 CDC 同步过来的 RW 寄存器值。收到 `rw_update_pulse` 时批量更新。
-- **读 MUX**：`addr ∈ [0,4]` 读 RO regs，`addr ∈ [5,14]` 读 RW shadow。与 pclk 端接口风格对称。
+当前 RO 路径是“宽松同步”：
 
-### 6.7 pulse_handshake — CDC 握手模块
+- `sclk` 侧本地写先更新本地 RO 寄存器
+- 再通过 pulse CDC 把更新通知到 `pclk` 侧 shadow
+- APB 读取的是 `pclk` 侧 shadow，因此短时间内可能读到旧值
 
-基于 toggle 的脉冲跨时钟域同步器。
+如果 `sclk` 侧在前一次 RO 同步完成前连续更新多次，后续脉冲可能被合并或丢弃。这个行为适合“状态类寄存器”，不适合要求逐次事件不丢失的计数器或 FIFO 状态上报。
 
-**工作流程：**
-1. 源端收到 `pulse_src`（非 busy 时）→ 翻转 `req_toggle`，busy 拉高
-2. `req_toggle` 经 3 级同步器到达目标端 → 检测边沿产生 `pulse_dst`
-3. 目标端的同步值经 2 级反馈同步器回到源端
-4. 反馈匹配 `req_toggle` → busy 清除
+## 6. 文件列表
 
-**亚稳态安全**：前向 3 级同步，反馈 2 级同步。
-
-## 7. 文件结构
-
-```
+```text
 Simple_APB/
 ├── src/
-│   ├── simple_apb.vh          地址映射和寄存器配置宏定义
-│   ├── simple_apb.v           顶层模块
-│   ├── apb_master.v           APB master 协议桥
-│   ├── apb_interconnect.v     1:2 地址译码互联
-│   ├── apb_slave.v            APB slave 协议适配器
-│   ├── apb_reg_file.v         双时钟域寄存器管理（CDC wrapper）
-│   ├── apb_regs_pclk.v        pclk 域寄存器
-│   ├── apb_regs_sclk.v        sclk 域寄存器
-│   └── handshake_cdc.v        脉冲握手 CDC 模块
-├── dv/
-│   └── top_apb_tb.v           Testbench
+│   ├── simple_apb.vh
+│   ├── simple_apb.v
+│   ├── apb_master.v
+│   ├── apb_interconnect.v
+│   ├── apb_slave.v
+│   ├── apb_reg_file.v
+│   ├── apb_regs_pclk.v
+│   ├── apb_regs_sclk.v
+│   └── handshake_cdc.v
 ├── include/
-│   ├── rtl_filelist.f         RTL 文件列表
-│   └── dv_filelist.f          仿真文件列表
+│   ├── rtl_filelist.f
+│   └── dv_filelist.f
 ├── sim/
-│   ├── Makefile               仿真构建脚本（Xcelium）
-│   └── scripts/probe.tcl      波形探针脚本
-├── doc/
-│   └── apb_master_timing.json WaveDrom 时序图
-
+│   ├── Makefile
+│   └── scripts/probe.tcl
+├── pic/
+│   └── apb_master_timing.PNG
+└── APB_doc/
+    └── IHI0024C_amba_apb_protocol_v2_0_spec.pdf
 ```
+
+当前仓库未提供 testbench。

@@ -46,6 +46,9 @@ module apb_regs_sclk #(
 	// NUM_RO_REGS=5 => (1<<5)-1 = 16'b0000_0000_0001_1111
 	localparam [2**IDX_WIDTH-1:0] RO_MASK = (1 << NUM_RO_REGS) - 1;
 
+	// VALID_MASK: bit[i]=1 if reg[i] exists
+	localparam [2**IDX_WIDTH-1:0] VALID_MASK = (1 << (NUM_RO_REGS + NUM_RW_REGS)) - 1;
+
 	// -------------------------------------------------------------------------
 	// RO registers (slv_clk domain, local writes here)
 	// -------------------------------------------------------------------------
@@ -92,8 +95,8 @@ module apb_regs_sclk #(
 	// -------------------------------------------------------------------------
 	// Read mux: RO regs [0..4], RW shadow [5..14]
 	// -------------------------------------------------------------------------
-	assign local_rd_data = RO_MASK[local_rd_addr]
-	                     ? ro_regs[local_rd_addr]
-	                     : rw_shadow[local_rd_addr - RW_BASE];
+	assign local_rd_data = !VALID_MASK[local_rd_addr] ? {DATA_WIDTH{1'b0}}              :
+	                       RO_MASK[local_rd_addr]    ? ro_regs[local_rd_addr]           :
+	                                                   rw_shadow[local_rd_addr - RW_BASE];
 
 endmodule
