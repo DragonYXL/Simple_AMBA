@@ -248,7 +248,6 @@ Simple_APB/
 │   ├── Makefile
 │   └── scripts/probe.tcl
 ├── pic/
-│   ├── apb_master_timing.PNG
 │   ├── apb_master_waitstate.json  # WaveDrom 波形源文件
 │   └── pulse_handshake_cdc.json   # WaveDrom 波形源文件
 └── APB_doc/
