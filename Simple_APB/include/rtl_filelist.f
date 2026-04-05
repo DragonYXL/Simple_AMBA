@@ -4,7 +4,7 @@
 
 +incdir+../src
 
-../src/handshake_cdc.v
+../src/pulse_handshake.v
 ../src/slave_reg_block.v
 ../src/reg_cdc_bridge.v
 ../src/apb_slave_interface.v

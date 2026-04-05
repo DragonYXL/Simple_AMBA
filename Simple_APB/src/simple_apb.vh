@@ -30,9 +30,7 @@
 // -------------------------------------------------------------------------
 // Register configuration
 // -------------------------------------------------------------------------
-`define NUM_REGS              15
 `define NUM_RO_REGS           5
 `define NUM_RW_REGS           10
-`define REG_IDX_WIDTH         4
 
 `endif

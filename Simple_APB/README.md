@@ -11,7 +11,7 @@ Simple APB 是一个双时钟域 APB 寄存器访问子系统，结构如下：
   - `reg_cdc_bridge`
   - `slave_reg_block`
 
-新的架构中，寄存器真值只保存在外设时钟域 `sclk` 中。APB 访问通过请求/响应方式跨时钟域完成，不再使用 `pclk` 域 shadow 寄存器。
+寄存器真值只保存在外设时钟域 `slv_clk` 中。APB 访问通过请求/响应方式跨时钟域完成，不再使用 `pclk` 域 shadow 寄存器。
 
 ## 2. 架构分层
 
@@ -22,28 +22,47 @@ simple_apb
 ├── slave0
 │   ├── apb_slave_interface
 │   ├── reg_cdc_bridge
+│   │   ├── pulse_handshake (req)
+│   │   └── pulse_handshake (rsp)
 │   └── slave_reg_block
 └── slave1
     ├── apb_slave_interface
     ├── reg_cdc_bridge
+    │   ├── pulse_handshake (req)
+    │   └── pulse_handshake (rsp)
     └── slave_reg_block
 ```
 
 各层职责：
 
 - `apb_slave_interface`
-  - 只负责 APB 协议适配
+  - 只负责 APB 协议适配（纯组合逻辑，无状态机）
   - 把 APB SETUP/ACCESS 转换成单笔寄存器请求
   - 等待后端响应并驱动 `PREADY/PRDATA/PSLVERR`
+  - `PRDATA` 和 `PSLVERR` 使用 `access_phase` 门控，防止非访问阶段泄露残留值
 - `reg_cdc_bridge`
-  - 只负责 `pclk` 与 `sclk` 之间的请求/响应 CDC
+  - 负责 `pclk (bus_clk)` 与 `slv_clk` 之间的请求/响应 CDC
+  - 请求 payload 在 `bus_clk` 域锁存，响应 payload 在 `slv_clk` 域锁存
+  - 每个方向使用独立的 `pulse_handshake` 实例跨域传递脉冲
   - 单次只允许一笔事务在途
+- `pulse_handshake`
+  - Toggle-based 单脉冲跨时钟域传输
+  - 3 级同步 + 2 级反馈，提供 `busy_src` 防止重入
 - `slave_reg_block`
-  - 是寄存器唯一真值所在
+  - 是寄存器唯一真值所在，运行在 `slv_clk` 域
   - 负责地址合法性、RO/RW 权限和寄存器语义
+  - 单周期响应：请求脉冲到来后的下一个 `slv_clk` 沿输出结果
   - 向外设逻辑暴露 `reg2hw/hw2reg` 风格接口
 
-## 3. 顶层接口
+## 3. 时钟域
+
+| 时钟域 | 信号 | 用途 |
+|--------|------|------|
+| APB 域 | `pclk` / `presetn` | APB master、interconnect、slave interface |
+| CDC bridge 源端 | `bus_clk` / `bus_rstn` | 映射到 `pclk`，锁存请求 payload |
+| 外设域 | `slv_clk` / `slv_rstn` | CDC bridge 目的端、slave_reg_block，锁存响应 payload |
+
+## 4. 顶层接口
 
 ### 时钟与复位
 
@@ -51,8 +70,8 @@ simple_apb
 |------|------|------|------|
 | `pclk` | input | 1 | APB 时钟 |
 | `presetn` | input | 1 | APB 复位，低有效 |
-| `sclk` | input | 1 | 外设寄存器时钟域 |
-| `srstn` | input | 1 | 外设寄存器复位，低有效 |
+| `slv_clk` | input | 1 | 外设寄存器时钟域 |
+| `slv_rstn` | input | 1 | 外设寄存器复位，低有效 |
 
 ### 命令接口
 
@@ -63,8 +82,8 @@ simple_apb
 | `addr` | input | 13 | APB 地址 |
 | `wdata` | input | 32 | 写数据 |
 | `rdata` | output | 32 | 读数据寄存结果 |
-| `done` | output | 1 | 访问完成，`ACCESS` 当拍有效 |
-| `slverr` | output | 1 | 错误响应，和 `done` 同拍 |
+| `done` | output | 1 | 访问完成，`ACCESS` 当拍有效（组合输出） |
+| `slverr` | output | 1 | 错误响应，和 `done` 同拍（组合输出） |
 
 ### `hw2reg / reg2hw` 接口
 
@@ -81,11 +100,11 @@ simple_apb
 | 信号 | 方向 | 位宽 | 说明 |
 |------|------|------|------|
 | `sX_reg2hw_rw_value` | output | `10*32` | `REG5-14` 的当前 RW 配置值 |
-| `sX_reg2hw_rw_write_pulse` | output | `10` | 软件成功写 `REG5-14` 时产生的单拍脉冲 |
+| `sX_reg2hw_rw_write_pulse` | output | `10` | 软件成功写 `REG5-14` 时产生的单拍脉冲（`slv_clk` 域） |
 
 其中 `X` 为 `0` 或 `1`。
 
-## 4. 地址映射
+## 5. 地址映射
 
 顶层 APB 地址宽度固定为 13 bit。
 
@@ -116,57 +135,99 @@ simple_apb
 
 非法访问规则：
 
-- `0x3C` 非法
+- `0x3C` 非法（超出 15 个寄存器范围）
 - `0x40` 及以上偏移非法
 - 非 32-bit 对齐访问非法
 - APB 写 `REG0-4` 非法
 
 以上非法访问都会在完成拍返回 `PSLVERR`。
 
-## 5. 模块说明
+## 6. 模块说明
 
-### 5.1 `apb_slave_interface`
+### 6.1 `apb_master`
 
-`apb_slave_interface` 在 `pclk` 域工作：
+三段式状态机 `IDLE → SETUP → ACCESS`：
 
-- 在 APB SETUP 周期发起一笔寄存器请求
-- 在 ACCESS 周期等待后端响应
-- 当响应返回时，拉高 `PREADY`
+- `IDLE`：等待 `start` 脉冲，锁存命令到 APB 输出寄存器
+- `SETUP`：驱动 `penable`
+- `ACCESS`：等待 `pready`，完成后组合输出 `done/slverr`，寄存 `rdata`
 
-因此当前 slave 访问天然支持 wait-state，不再要求 APB 单周期完成。
+### 6.2 `apb_interconnect`
 
-### 5.2 `reg_cdc_bridge`
+纯组合逻辑地址译码：
 
-`reg_cdc_bridge` 负责 `pclk -> sclk -> pclk` 的请求/响应往返：
+- 用 `paddr[12]` 选择 slave（`addr & ~MASK` 比较基地址）
+- 向下广播 `penable/pwrite/paddr[11:0]/pwdata`
+- 向上 mux `prdata/pready/pslverr`
 
-- `pclk` 域发起一笔 `reg_req`
-- 请求跨域到 `sclk`
-- `slave_reg_block` 执行访问并生成 `reg_rsp`
-- 响应跨域返回 `pclk`
+### 6.3 `apb_slave_interface`
 
-当前实现只支持单笔事务在途。
+纯组合逻辑 APB 协议适配：
 
-### 5.3 `slave_reg_block`
+- 在 APB SETUP 周期（`psel & ~penable`）发起一笔寄存器请求
+- 在 ACCESS 周期等待后端响应，通过 `pready` 驱动 wait-state
+- `prdata` 和 `pslverr` 仅在 `access_phase & pready` 时有效输出
 
-`slave_reg_block` 在 `sclk` 域工作，是寄存器的唯一真值源：
+### 6.4 `reg_cdc_bridge`
+
+双向 CDC 桥接，每个方向使用独立的 `pulse_handshake`：
+
+- 请求方向（`bus_clk → slv_clk`）：payload 在 `bus_clk` 域锁存
+- 响应方向（`slv_clk → bus_clk`）：payload 在 `slv_clk` 域锁存
+- 单事务在途保证锁存值在跨域期间不会被覆盖
+
+### 6.5 `pulse_handshake`
+
+Toggle-based 脉冲跨时钟域传输：
+
+- 源域：toggle 翻转 + busy 检测（防止重入）
+- 目的域：3 级同步器 + XOR 边沿检测生成目的域脉冲
+- 反馈路径：2 级同步器回传 ack 清除 busy
+
+### 6.6 `slave_reg_block`
+
+外设域寄存器块，单周期响应：
 
 - `REG5-14` 使用内部 RW 存储
 - `REG0-4` 直接来自 `hw2reg`
 - 成功写 RW 寄存器时，产生对应 `reg2hw_rw_write_pulse`
-- 所有地址和权限检查都在这里完成
+- 所有地址对齐、范围和权限检查集中在此模块
 
-## 6. 设计取向
+## 7. CDC 设计说明
+
+CDC 采用"源域锁存 + 脉冲握手"模式：
+
+1. 源域在脉冲触发时快照 payload 到寄存器（latch）
+2. `pulse_handshake` 将脉冲跨域传递到目的域
+3. 目的域收到同步后的脉冲时，源域 latch 值已稳定，直接读取
+4. 单事务在途保证 latch 在跨域期间不会被下一笔事务覆盖
+
+## 8. 设计取向
 
 这版架构的核心取向是：
 
-- `master` 和 `interconnect` 尽量保持不变
+- `master` 和 `interconnect` 保持冻结，除非有接口/逻辑不合理性
 - slave 侧 APB 接口与寄存器实现、CDC 机制解耦
 - RO/RW 访问统一走请求/响应模型
 - 不再维护 `pclk` 域 shadow 寄存器
 
-这种写法更接近“协议 wrapper + CDC bridge + peripheral-domain reg block”的工业分层方式。
+这种写法更接近"协议 wrapper + CDC bridge + peripheral-domain reg block"的工业分层方式。
 
-## 7. 文件列表
+## 9. 头文件定义 (`simple_apb.vh`)
+
+| 宏 | 值 | 说明 |
+|----|----|------|
+| `APB_ADDR_WIDTH` | 13 | 顶层 APB 地址宽度 |
+| `APB_DATA_WIDTH` | 32 | 数据宽度 |
+| `SLV0_BASE_ADDR` | `13'h0000` | Slave 0 基地址 |
+| `SLV1_BASE_ADDR` | `13'h1000` | Slave 1 基地址 |
+| `SLV_ADDR_MASK` | `13'h0FFF` | 4KB 地址空间掩码 |
+| `NUM_RO_REGS` | 5 | RO 寄存器数量 |
+| `NUM_RW_REGS` | 10 | RW 寄存器数量 |
+
+`NUM_REGS` (15) 和 `IDX_WIDTH` (4) 由 `slave_reg_block` 内部推导，不在头文件中定义。
+
+## 10. 文件列表
 
 ```text
 Simple_APB/
@@ -178,7 +239,9 @@ Simple_APB/
 │   ├── apb_slave_interface.v
 │   ├── reg_cdc_bridge.v
 │   ├── slave_reg_block.v
-│   └── handshake_cdc.v
+│   └── pulse_handshake.v
+├── dv/
+│   └── top_apb_tb.v
 ├── include/
 │   ├── rtl_filelist.f
 │   └── dv_filelist.f
@@ -190,5 +253,3 @@ Simple_APB/
 └── APB_doc/
     └── IHI0024C_amba_apb_protocol_v2_0_spec.pdf
 ```
-
-当前仓库未提供 testbench。

@@ -19,9 +19,9 @@ module simple_apb #(
 	input  wire                    pclk,
 	input  wire                    presetn,
 
-	// Peripheral clock domain
-	input  wire                    sclk,
-	input  wire                    srstn,
+	// Slave peripheral clock domain
+	input  wire                    slv_clk,
+	input  wire                    slv_rstn,
 
 	// Command interface
 	input  wire                           start,
@@ -202,36 +202,34 @@ module simple_apb #(
 		.ADDR_WIDTH (SLAVE_ADDR_WIDTH),
 		.DATA_WIDTH (DATA_WIDTH)
 	) u_slave0_cdc (
-		.src_clk       (pclk),
-		.src_rstn      (presetn),
-		.src_req_valid (s0_req_valid_if),
-		.src_req_write (s0_req_write_if),
-		.src_req_addr  (s0_req_addr_if),
-		.src_req_wdata (s0_req_wdata_if),
-		.src_rsp_ready (s0_rsp_ready_if),
-		.src_rsp_rdata (s0_rsp_rdata_if),
-		.src_rsp_err   (s0_rsp_err_if),
-		.dst_clk       (sclk),
-		.dst_rstn      (srstn),
-		.dst_req_valid (s0_req_valid_blk),
-		.dst_req_write (s0_req_write_blk),
-		.dst_req_addr  (s0_req_addr_blk),
-		.dst_req_wdata (s0_req_wdata_blk),
-		.dst_rsp_ready (s0_rsp_ready_blk),
-		.dst_rsp_rdata (s0_rsp_rdata_blk),
-		.dst_rsp_err   (s0_rsp_err_blk)
+		.bus_clk       (pclk),
+		.bus_rstn      (presetn),
+		.bus_req_valid (s0_req_valid_if),
+		.bus_req_write (s0_req_write_if),
+		.bus_req_addr  (s0_req_addr_if),
+		.bus_req_wdata (s0_req_wdata_if),
+		.bus_rsp_ready (s0_rsp_ready_if),
+		.bus_rsp_rdata (s0_rsp_rdata_if),
+		.bus_rsp_err   (s0_rsp_err_if),
+		.slv_clk       (slv_clk),
+		.slv_rstn      (slv_rstn),
+		.slv_req_valid (s0_req_valid_blk),
+		.slv_req_write (s0_req_write_blk),
+		.slv_req_addr  (s0_req_addr_blk),
+		.slv_req_wdata (s0_req_wdata_blk),
+		.slv_rsp_ready (s0_rsp_ready_blk),
+		.slv_rsp_rdata (s0_rsp_rdata_blk),
+		.slv_rsp_err   (s0_rsp_err_blk)
 	);
 
 	slave_reg_block #(
 		.ADDR_WIDTH   (SLAVE_ADDR_WIDTH),
 		.DATA_WIDTH   (DATA_WIDTH),
-		.NUM_REGS     (`NUM_REGS),
 		.NUM_RO_REGS  (`NUM_RO_REGS),
-		.NUM_RW_REGS  (`NUM_RW_REGS),
-		.IDX_WIDTH    (`REG_IDX_WIDTH)
+		.NUM_RW_REGS  (`NUM_RW_REGS)
 	) u_slave0_regs (
-		.periph_clk            (sclk),
-		.periph_rstn           (srstn),
+		.slv_clk               (slv_clk),
+		.slv_rstn              (slv_rstn),
 		.reg_req_valid         (s0_req_valid_blk),
 		.reg_req_write         (s0_req_write_blk),
 		.reg_req_addr          (s0_req_addr_blk),
@@ -274,36 +272,34 @@ module simple_apb #(
 		.ADDR_WIDTH (SLAVE_ADDR_WIDTH),
 		.DATA_WIDTH (DATA_WIDTH)
 	) u_slave1_cdc (
-		.src_clk       (pclk),
-		.src_rstn      (presetn),
-		.src_req_valid (s1_req_valid_if),
-		.src_req_write (s1_req_write_if),
-		.src_req_addr  (s1_req_addr_if),
-		.src_req_wdata (s1_req_wdata_if),
-		.src_rsp_ready (s1_rsp_ready_if),
-		.src_rsp_rdata (s1_rsp_rdata_if),
-		.src_rsp_err   (s1_rsp_err_if),
-		.dst_clk       (sclk),
-		.dst_rstn      (srstn),
-		.dst_req_valid (s1_req_valid_blk),
-		.dst_req_write (s1_req_write_blk),
-		.dst_req_addr  (s1_req_addr_blk),
-		.dst_req_wdata (s1_req_wdata_blk),
-		.dst_rsp_ready (s1_rsp_ready_blk),
-		.dst_rsp_rdata (s1_rsp_rdata_blk),
-		.dst_rsp_err   (s1_rsp_err_blk)
+		.bus_clk       (pclk),
+		.bus_rstn      (presetn),
+		.bus_req_valid (s1_req_valid_if),
+		.bus_req_write (s1_req_write_if),
+		.bus_req_addr  (s1_req_addr_if),
+		.bus_req_wdata (s1_req_wdata_if),
+		.bus_rsp_ready (s1_rsp_ready_if),
+		.bus_rsp_rdata (s1_rsp_rdata_if),
+		.bus_rsp_err   (s1_rsp_err_if),
+		.slv_clk       (slv_clk),
+		.slv_rstn      (slv_rstn),
+		.slv_req_valid (s1_req_valid_blk),
+		.slv_req_write (s1_req_write_blk),
+		.slv_req_addr  (s1_req_addr_blk),
+		.slv_req_wdata (s1_req_wdata_blk),
+		.slv_rsp_ready (s1_rsp_ready_blk),
+		.slv_rsp_rdata (s1_rsp_rdata_blk),
+		.slv_rsp_err   (s1_rsp_err_blk)
 	);
 
 	slave_reg_block #(
 		.ADDR_WIDTH   (SLAVE_ADDR_WIDTH),
 		.DATA_WIDTH   (DATA_WIDTH),
-		.NUM_REGS     (`NUM_REGS),
 		.NUM_RO_REGS  (`NUM_RO_REGS),
-		.NUM_RW_REGS  (`NUM_RW_REGS),
-		.IDX_WIDTH    (`REG_IDX_WIDTH)
+		.NUM_RW_REGS  (`NUM_RW_REGS)
 	) u_slave1_regs (
-		.periph_clk            (sclk),
-		.periph_rstn           (srstn),
+		.slv_clk               (slv_clk),
+		.slv_rstn              (slv_rstn),
 		.reg_req_valid         (s1_req_valid_blk),
 		.reg_req_write         (s1_req_write_blk),
 		.reg_req_addr          (s1_req_addr_blk),
