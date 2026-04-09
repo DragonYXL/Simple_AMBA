@@ -1,21 +1,19 @@
 // =============================================================================
-// Name:     ahb_master
-// Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Name: ahb_master
+// Date: 2026.04.09
+// Authors: xlyan -- dragonyxl.eminence@gmail.com
 //
 // Function:
-// - Single-word AHB-Lite master protocol bridge
-// - Converts command interface (start/addr/wdata/write) to AHB-Lite protocol
-// - AHB-Lite pipelined: address phase (HTRANS/HADDR) then data phase (HWDATA/HRDATA)
-// - Registered outputs driven one cycle ahead to align with FSM state
-// - done/hresp_out are combinational for same-cycle notification
+// - AHB-Lite single-transfer master with simple command interface
+// - Converts start/write/addr/wdata pulses into AHB-Lite SINGLE transfers
+// - Used as CPU stub on Bus1 for register configuration
 // =============================================================================
 
-`include "ahb_addr_def.vh"
+`include "ahb_lite_def.vh"
 
 module ahb_master #(
-	parameter ADDR_WIDTH = 13,
-	parameter DATA_WIDTH = 32
+	parameter ADDR_WIDTH = `AHB_ADDR_W,
+	parameter DATA_WIDTH = `AHB_DATA_W
 ) (
 	input  wire                    hclk,
 	input  wire                    hresetn,
@@ -25,9 +23,9 @@ module ahb_master #(
 	input  wire                    write,      // 1=write, 0=read
 	input  wire [ADDR_WIDTH-1:0]   addr,
 	input  wire [DATA_WIDTH-1:0]   wdata,
-	output reg  [DATA_WIDTH-1:0]   rdata,      // registered, valid cycle after done
-	output wire                    done,       // combinational, same-cycle notification
-	output wire                    resp_err,   // combinational, same-cycle notification
+	output reg  [DATA_WIDTH-1:0]   rdata,      // valid one cycle after done
+	output wire                    done,       // combinational, same-cycle
+	output wire                    error,      // combinational, same-cycle
 
 	// AHB-Lite master interface
 	output reg  [ADDR_WIDTH-1:0]   haddr,
@@ -45,13 +43,10 @@ module ahb_master #(
 	// FSM states
 	// -------------------------------------------------------------------------
 	localparam IDLE = 2'd0;
-	localparam ADDR = 2'd1;  // AHB address phase
-	localparam DATA = 2'd2;  // AHB data phase (wait for hready)
+	localparam ADDR = 2'd1;  // address phase on bus
+	localparam DATA = 2'd2;  // data phase on bus
 
 	reg [1:0] state, nxt_state;
-
-	// Latched write data (captured during ADDR phase for use in DATA phase)
-	reg [DATA_WIDTH-1:0] wdata_lat;
 
 	// -------------------------------------------------------------------------
 	// State register
@@ -74,71 +69,73 @@ module ahb_master #(
 					nxt_state = ADDR;
 			end
 			ADDR: begin
-				nxt_state = DATA;
+				if (hready)
+					nxt_state = DATA;
 			end
 			DATA: begin
 				if (hready)
 					nxt_state = IDLE;
 			end
-			default: nxt_state = IDLE;
+			default:
+				nxt_state = IDLE;
 		endcase
 	end
 
 	// -------------------------------------------------------------------------
-	// Combinational done / resp_err (same-cycle as DATA + hready)
+	// Combinational done / error
 	// -------------------------------------------------------------------------
-	assign done     = (state == DATA) & hready;
-	assign resp_err = (state == DATA) & hready & hresp;
+	assign done  = (state == DATA) & hready;
+	assign error = (state == DATA) & hready & hresp;
 
 	// -------------------------------------------------------------------------
-	// Datapath (registered outputs driven one cycle ahead)
+	// Registered AHB outputs
 	// -------------------------------------------------------------------------
 	always @(posedge hclk or negedge hresetn) begin
 		if (!hresetn) begin
-			haddr     <= {ADDR_WIDTH{1'b0}};
-			htrans    <= `HTRANS_IDLE;
-			hwrite    <= 1'b0;
-			hsize     <= 3'b000;
-			hburst    <= `HBURST_SINGLE;
-			hwdata    <= {DATA_WIDTH{1'b0}};
-			wdata_lat <= {DATA_WIDTH{1'b0}};
-			rdata     <= {DATA_WIDTH{1'b0}};
-		end else begin
+			htrans <= `HTRANS_IDLE;
+			haddr  <= {ADDR_WIDTH{1'b0}};
+			hwrite <= 1'b0;
+			hsize  <= `HSIZE_WORD;
+			hburst <= `HBURST_SINGLE;
+			hwdata <= {DATA_WIDTH{1'b0}};
+			rdata  <= {DATA_WIDTH{1'b0}};
+		end
+		else begin
 			case (state)
 				// ---------------------------------------------------------
-				// IDLE: on start, drive address phase outputs for next cycle
+				// IDLE: latch command, drive address phase for next cycle
 				// ---------------------------------------------------------
 				IDLE: begin
 					if (start) begin
-						haddr  <= addr;
 						htrans <= `HTRANS_NONSEQ;
+						haddr  <= addr;
 						hwrite <= write;
 						hsize  <= `HSIZE_WORD;
 						hburst <= `HBURST_SINGLE;
-						wdata_lat <= wdata;
-					end else begin
+						hwdata <= wdata;
+					end
+				end
+
+				// ---------------------------------------------------------
+				// ADDR: address captured, prepare data phase
+				// ---------------------------------------------------------
+				ADDR: begin
+					if (hready) begin
 						htrans <= `HTRANS_IDLE;
 					end
 				end
 
 				// ---------------------------------------------------------
-				// ADDR: address phase active, drive write data for data phase
-				// ---------------------------------------------------------
-				ADDR: begin
-					htrans <= `HTRANS_IDLE;
-					hwdata <= wdata_lat;
-				end
-
-				// ---------------------------------------------------------
-				// DATA: wait for hready, then capture read data and clean up
+				// DATA: transfer complete, capture read data, clean up
 				// ---------------------------------------------------------
 				DATA: begin
 					if (hready) begin
+						htrans <= `HTRANS_IDLE;
 						haddr  <= {ADDR_WIDTH{1'b0}};
 						hwrite <= 1'b0;
-						hsize  <= 3'b000;
 						hwdata <= {DATA_WIDTH{1'b0}};
-						rdata  <= hrdata;
+						if (!hwrite)
+							rdata <= hrdata;
 					end
 				end
 			endcase

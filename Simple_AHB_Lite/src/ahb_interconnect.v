@@ -1,94 +1,93 @@
 // =============================================================================
-// Name:     ahb_interconnect
-// Date:     2026.04.03
-// Authors:  xlyan <yanxl24@m.fudan.edu.cn>
+// Name: ahb_interconnect
+// Date: 2026.04.09
+// Authors: xlyan -- dragonyxl.eminence@gmail.com
 //
 // Function:
-// - AHB-Lite interconnect (1 master, 2 slaves)
-// - Address map:
-//     slave 0: 0x0000 - 0x0FFF  (HADDR[12] == 0)
-//     slave 1: 0x1000 - 0x1FFF  (HADDR[12] == 1)
-// - Decodes HSEL per slave from master address
-// - Muxes HRDATA/HREADYOUT/HRESP back to master
+// - AHB-Lite 1-master-to-2-slave interconnect
+// - Address decoder uses a single bit (SEL_BIT) for slave selection
+// - Strips upper bits and passes local address to slaves
+// - Muxes HRDATA / HREADYOUT / HRESP from data-phase-selected slave
+// - Reused for both Bus1 and Bus2
 // =============================================================================
 
-`include "ahb_addr_def.vh"
+`include "ahb_lite_def.vh"
 
 module ahb_interconnect #(
-	parameter ADDR_WIDTH = 13,
-	parameter DATA_WIDTH = 32
+	parameter ADDR_WIDTH = `AHB_ADDR_W,
+	parameter DATA_WIDTH = `AHB_DATA_W,
+	parameter SEL_BIT    = 12           // address bit for slave select
 ) (
+	input  wire                      hclk,
+	input  wire                      hresetn,
+
 	// Master side
-	input  wire [ADDR_WIDTH-1:0]   haddr_m,
-	input  wire [1:0]              htrans_m,
-	input  wire                    hwrite_m,
-	input  wire [2:0]              hsize_m,
-	input  wire [2:0]              hburst_m,
-	input  wire [DATA_WIDTH-1:0]   hwdata_m,
-	output wire [DATA_WIDTH-1:0]   hrdata_m,
-	output wire                    hready_m,
-	output wire                    hresp_m,
+	input  wire [ADDR_WIDTH-1:0]     haddr,
+	input  wire [1:0]                htrans,
+	input  wire                      hwrite,
+	input  wire [2:0]                hsize,
+	input  wire [2:0]                hburst,
+	input  wire [DATA_WIDTH-1:0]     hwdata,
+	output wire [DATA_WIDTH-1:0]     hrdata,
+	output wire                      hready,
+	output wire                      hresp,
 
 	// Slave 0
-	output wire                    hsel_s0,
-	output wire [ADDR_WIDTH-2:0]   haddr_s0,
-	output wire [1:0]              htrans_s0,
-	output wire                    hwrite_s0,
-	output wire [2:0]              hsize_s0,
-	output wire [DATA_WIDTH-1:0]   hwdata_s0,
-	input  wire [DATA_WIDTH-1:0]   hrdata_s0,
-	input  wire                    hreadyout_s0,
-	input  wire                    hresp_s0,
+	output wire                      s0_hsel,
+	input  wire [DATA_WIDTH-1:0]     s0_hrdata,
+	input  wire                      s0_hreadyout,
+	input  wire                      s0_hresp,
 
 	// Slave 1
-	output wire                    hsel_s1,
-	output wire [ADDR_WIDTH-2:0]   haddr_s1,
-	output wire [1:0]              htrans_s1,
-	output wire                    hwrite_s1,
-	output wire [2:0]              hsize_s1,
-	output wire [DATA_WIDTH-1:0]   hwdata_s1,
-	input  wire [DATA_WIDTH-1:0]   hrdata_s1,
-	input  wire                    hreadyout_s1,
-	input  wire                    hresp_s1
+	output wire                      s1_hsel,
+	input  wire [DATA_WIDTH-1:0]     s1_hrdata,
+	input  wire                      s1_hreadyout,
+	input  wire                      s1_hresp,
+
+	// Shared slave-facing signals
+	output wire [SEL_BIT-1:0]        s_haddr,
+	output wire [1:0]                s_htrans,
+	output wire                      s_hwrite,
+	output wire [2:0]                s_hsize,
+	output wire [2:0]                s_hburst,
+	output wire [DATA_WIDTH-1:0]     s_hwdata,
+	output wire                      s_hready
 );
 
 	// -------------------------------------------------------------------------
-	// Address decode (active when HTRANS indicates a valid transfer)
+	// Address decode (combinational, address phase)
 	// -------------------------------------------------------------------------
-	wire active_transfer;
-	assign active_transfer = htrans_m[1];
-
-	wire sel_slave0;
-	wire sel_slave1;
-	assign sel_slave0 = active_transfer & ((haddr_m & ~`SLV_ADDR_MASK) == `SLV0_BASE_ADDR);
-	assign sel_slave1 = active_transfer & ((haddr_m & ~`SLV_ADDR_MASK) == `SLV1_BASE_ADDR);
+	assign s0_hsel = ~haddr[SEL_BIT];
+	assign s1_hsel =  haddr[SEL_BIT];
 
 	// -------------------------------------------------------------------------
-	// Forward to slaves (shared signals broadcast, HSEL gated)
+	// Broadcast master signals to slaves (strip upper bits for address)
 	// -------------------------------------------------------------------------
-	// Slave 0
-	assign hsel_s0   = sel_slave0;
-	assign haddr_s0  = haddr_m[ADDR_WIDTH-2:0];
-	assign htrans_s0 = htrans_m;
-	assign hwrite_s0 = hwrite_m;
-	assign hsize_s0  = hsize_m;
-	assign hwdata_s0 = hwdata_m;
-
-	// Slave 1
-	assign hsel_s1   = sel_slave1;
-	assign haddr_s1  = haddr_m[ADDR_WIDTH-2:0];
-	assign htrans_s1 = htrans_m;
-	assign hwrite_s1 = hwrite_m;
-	assign hsize_s1  = hsize_m;
-	assign hwdata_s1 = hwdata_m;
+	assign s_haddr  = haddr[SEL_BIT-1:0];
+	assign s_htrans = htrans;
+	assign s_hwrite = hwrite;
+	assign s_hsize  = hsize;
+	assign s_hburst = hburst;
+	assign s_hwdata = hwdata;
+	assign s_hready = hready;          // muxed HREADY fed back to slaves
 
 	// -------------------------------------------------------------------------
-	// Mux back to master (based on which slave was selected)
+	// Data phase slave select (registered, updated when hready = 1)
 	// -------------------------------------------------------------------------
-	// Latched slave select for data phase mux (address and data phases are pipelined)
-	// For this simple design with combinational slaves, use address-phase select directly
-	assign hrdata_m = sel_slave1 ? hrdata_s1  : hrdata_s0;
-	assign hready_m = sel_slave1 ? hreadyout_s1 : hreadyout_s0;
-	assign hresp_m  = sel_slave1 ? hresp_s1  : hresp_s0;
+	reg dph_sel;   // 0 = slave 0,  1 = slave 1
+
+	always @(posedge hclk or negedge hresetn) begin
+		if (!hresetn)
+			dph_sel <= 1'b0;
+		else if (hready)
+			dph_sel <= haddr[SEL_BIT];
+	end
+
+	// -------------------------------------------------------------------------
+	// Response mux (data phase)
+	// -------------------------------------------------------------------------
+	assign hrdata = dph_sel ? s1_hrdata    : s0_hrdata;
+	assign hready = dph_sel ? s1_hreadyout : s0_hreadyout;
+	assign hresp  = dph_sel ? s1_hresp     : s0_hresp;
 
 endmodule
