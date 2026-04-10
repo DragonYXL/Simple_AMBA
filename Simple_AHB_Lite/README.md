@@ -9,7 +9,7 @@ Simple AHB-Lite 是一个用于学习 AHB-Lite 总线协议的项目，覆盖了
 
 DMA 是两条总线的桥梁——在 Bus1 上它是 slave（被 CPU 配置），在 Bus2 上它是 master（执行数据搬运）。这种 slave+master 的双重角色在实际 SoC 中非常常见。
 
-CPU 看不到 SRAM，这不是设计缺陷，而是学习目的上的合理简化：Bus1 专注寄存器访问，Bus2 专注 burst 传输，两条路径互不干扰。SRAM 的初始数据可以在仿真 TB 中通过层次路径或 `$readmemh` 直接加载。
+项目和实际工程最大的区别是 CPU 看不到 SRAM 这个总线上的 slave ，但这只是学习目的上的简化：Bus1 专注寄存器访问，Bus2 专注 burst 传输，两条路径互不干扰。SRAM 的初始数据可以在仿真 TB 中通过层次路径或 `$readmemh` 直接加载。
 
 项目的模块组成：
 
